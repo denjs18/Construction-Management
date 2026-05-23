@@ -29,7 +29,11 @@ function StepCard({ step, index, total, completed, onToggle }) {
 
       {open && (
         <div className="px-4 pb-4 space-y-3">
-          <p className="text-sm text-gray-700 leading-relaxed">{step.description}</p>
+          <div className="space-y-2">
+            {step.description.split('\n\n').map((para, i) => (
+              <p key={i} className="text-sm text-gray-700 leading-relaxed">{para}</p>
+            ))}
+          </div>
 
           {step.warning && (
             <div className="flex gap-2 bg-red-50 border border-red-100 rounded-xl p-3">

@@ -24,10 +24,12 @@ function buildProjectFromTemplate(config) {
     totalBudget: parseFloat(config.totalBudget) || 0,
     startDate: config.startDate || new Date().toISOString().split('T')[0],
     createdAt: new Date().toISOString(),
-    phases: template.phases.map(phase => ({
-      ...phase,
-      tasks: phase.tasks.map(task => ({ ...task })),
-    })),
+    phases: template.phases
+      .filter(phase => !config.selectedPhaseIds || config.selectedPhaseIds.includes(phase.id))
+      .map(phase => ({
+        ...phase,
+        tasks: phase.tasks.map(task => ({ ...task })),
+      })),
     budget: {
       total: parseFloat(config.totalBudget) || 0,
       lots: lots,
