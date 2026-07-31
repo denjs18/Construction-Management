@@ -493,6 +493,48 @@ export function totalOpeningArea(openings, wallIds = null) {
 /* ------------------------------------------------------------ constructeurs */
 
 /**
+ * Rattrape les extrémités de mur restées en l'air.
+ *
+ * Au doigt, on vise rarement juste : une cloison tracée à quelques centimètres
+ * du mur porteur ne ferme pas la pièce, et rien ne se calcule. On rattache donc
+ * toute extrémité libre qui passe à portée d'un autre mur, en la posant
+ * exactement dessus.
+ */
+export function healDanglingEnds(walls, tolerance = 45) {
+  const endpoints = []
+  for (const wall of walls) {
+    endpoints.push({ wall, key: 'a' }, { wall, key: 'b' })
+  }
+
+  const isConnected = (point, self) => walls.some(w =>
+    w.id !== self.id && (dist(w.a, point) <= NODE_TOLERANCE || dist(w.b, point) <= NODE_TOLERANCE))
+
+  const moved = new Map() // id -> { a?, b? }
+
+  for (const { wall, key } of endpoints) {
+    const point = wall[key]
+    if (isConnected(point, wall)) continue
+
+    let best = null
+    for (const other of walls) {
+      if (other.id === wall.id) continue
+      const p = projectOnSegment(point, other.a, other.b)
+      if (p.distance <= tolerance && p.distance > 0.5 && (!best || p.distance < best.distance)) {
+        best = p
+      }
+    }
+    if (!best) continue
+
+    const patch = moved.get(wall.id) || {}
+    patch[key] = { x: Math.round(best.point.x), y: Math.round(best.point.y) }
+    moved.set(wall.id, patch)
+  }
+
+  if (!moved.size) return walls
+  return walls.map(w => (moved.has(w.id) ? { ...w, ...moved.get(w.id) } : w))
+}
+
+/**
  * Déplace tous les murs qui partagent un nœud. Indispensable pour que les
  * angles restent connectés quand on modifie la longueur d'un mur.
  */

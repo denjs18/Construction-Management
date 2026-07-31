@@ -8,8 +8,8 @@ import Header from '../layout/Header'
 import PlanCanvas from '../plan/PlanCanvas'
 import { useApp } from '../../contexts/AppContext'
 import {
-  makeWall, smartSnap, orthoConstrain, dist, formatMeters,
-  rectanglePlan, setWallLength, projectOnSegment,
+  makeWall, smartSnap, orthoConstrain, dist,
+  rectanglePlan, setWallLength, projectOnSegment, healDanglingEnds,
 } from '../../lib/geometry'
 import { computeSurfaces } from '../../lib/metre'
 import { STRUCTURE_TYPES, STRUCTURE_BY_ID, ROOM_TYPES, ROOF_TYPES } from '../../data/prices'
@@ -59,11 +59,20 @@ export default function PlanEditor() {
 
   const setWalls = (next) => updatePlan({ walls: next })
 
+  /** Fin d'un tracé : on raccroche les extrémités restées en l'air */
+  const finishDrawing = (currentWalls = walls) => {
+    setWalls(healDanglingEnds(currentWalls))
+    setDraft(null)
+    setMode('view')
+  }
+
   const handleTap = (world, pick) => {
     if (mode === 'draw') {
       // L'accroche sur un mur existant l'emporte sur la contrainte d'angle
       // droit : mieux vaut un raccord franc qu'un angle parfait mais ouvert.
-      const snapped = smartSnap(world, walls)
+      // Le rayon suit le zoom pour rester à portée de doigt constante.
+      const radius = pick?.scale ? Math.max(25, 26 / pick.scale) : 25
+      const snapped = smartSnap(world, walls, { radius })
       const anchored = snapped.snapped === 'node' || snapped.snapped === 'wall'
       let point = snapped
       if (!anchored && ortho && draft?.points?.length) {
@@ -85,8 +94,7 @@ export default function PlanEditor() {
       // Fermeture automatique du contour
       const first = draft.points[0]
       if (draft.points.length >= 2 && dist(point, first) < 20) {
-        setDraft(null)
-        setMode('view')
+        finishDrawing([...walls, wall])
         return
       }
       setDraft({ points: [...draft.points, { x: point.x, y: point.y }] })
@@ -280,7 +288,7 @@ export default function PlanEditor() {
             </div>
             {draft && (
               <button
-                onClick={() => { setDraft(null); setMode('view') }}
+                onClick={() => finishDrawing()}
                 className="ml-auto px-3 py-2 bg-green-600 text-white rounded-xl text-xs font-semibold shadow-sm"
               >
                 <Check size={14} className="inline mr-1" />

@@ -1,7 +1,91 @@
+import { useMemo } from 'react'
 import { useApp } from '../../contexts/AppContext'
 import { Link, useNavigate } from 'react-router-dom'
-import { CheckCircle2, Circle, Clock, TrendingUp, ChevronRight, Plus, AlertCircle } from 'lucide-react'
+import { CheckCircle2, Circle, Clock, TrendingUp, ChevronRight, Plus, AlertCircle, Ruler, Box, Calculator } from 'lucide-react'
 import { BUDGET_LOTS } from '../../data/templates'
+import { computeSurfaces, computeEstimate } from '../../lib/metre'
+import { formatEuroShort } from '../../data/prices'
+
+/**
+ * Raccourci vers le plan. Tant que rien n'est dessiné, la carte invite à
+ * commencer ; ensuite elle affiche les chiffres clés du projet.
+ */
+function PlanCard() {
+  const { activePlan } = useApp()
+  const navigate = useNavigate()
+  const hasPlan = (activePlan?.walls || []).length > 0
+
+  const summary = useMemo(() => {
+    if (!hasPlan) return null
+    const surfaces = computeSurfaces(activePlan)
+    const estimate = computeEstimate(activePlan)
+    return { surfaces, estimate }
+  }, [activePlan, hasPlan])
+
+  if (!hasPlan) {
+    return (
+      <button
+        onClick={() => navigate('/plan')}
+        className="w-full card flex items-center gap-3 text-left active:bg-gray-50"
+      >
+        <div className="w-11 h-11 rounded-2xl bg-blue-50 flex items-center justify-center flex-shrink-0">
+          <Ruler size={20} className="text-blue-600" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-gray-900">Dessiner le plan</p>
+          <p className="text-xs text-gray-500 leading-relaxed">
+            Obtenez la maquette 3D, le chiffrage détaillé et les plans de réseaux
+          </p>
+        </div>
+        <ChevronRight size={18} className="text-gray-300 flex-shrink-0" />
+      </button>
+    )
+  }
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+          <Ruler size={18} className="text-blue-600" />
+          Mon plan
+        </h2>
+        <Link to="/plan" className="text-blue-600 text-sm font-medium">Modifier →</Link>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <MiniStat value={`${summary.surfaces.floorArea.toFixed(0)} m²`} label="Habitable" />
+        <MiniStat value={summary.surfaces.rooms.length} label="Pièces" />
+        <MiniStat value={formatEuroShort(summary.estimate.total)} label="Estimé" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          onClick={() => navigate('/plan/3d')}
+          className="flex items-center justify-center gap-1.5 bg-slate-800 text-white text-sm font-semibold py-2.5 rounded-xl active:bg-slate-900"
+        >
+          <Box size={15} />
+          Vue 3D
+        </button>
+        <button
+          onClick={() => navigate('/chiffrage')}
+          className="flex items-center justify-center gap-1.5 bg-blue-600 text-white text-sm font-semibold py-2.5 rounded-xl active:bg-blue-700"
+        >
+          <Calculator size={15} />
+          Chiffrage
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function MiniStat({ value, label }) {
+  return (
+    <div className="bg-slate-50 rounded-xl py-2 text-center">
+      <p className="text-sm font-bold text-gray-900 leading-tight">{value}</p>
+      <p className="text-[10px] text-gray-500 mt-0.5">{label}</p>
+    </div>
+  )
+}
 
 function ProgressRing({ value, size = 80 }) {
   const r = (size - 8) / 2
@@ -88,6 +172,9 @@ export default function Dashboard() {
       </div>
 
       <div className="px-4 -mt-4 space-y-4">
+        {/* Plan et maquette */}
+        <PlanCard />
+
         {/* Budget card */}
         <div className="card">
           <div className="flex items-center justify-between mb-3">

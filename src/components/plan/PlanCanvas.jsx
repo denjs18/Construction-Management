@@ -160,7 +160,10 @@ const PlanCanvas = forwardRef(function PlanCanvas({
     const g = gesture.current
     pointers.current.delete(e.pointerId)
     if (g && g.type === 'maybe-tap' && !g.moved && onTap) {
-      onTap(toWorld(e.clientX, e.clientY), pickAt(toWorld(e.clientX, e.clientY)))
+      const world = toWorld(e.clientX, e.clientY)
+      // On transmet l'échelle : l'aimantage doit se sentir identique au doigt
+      // quel que soit le zoom, donc son rayon se raisonne en pixels écran.
+      onTap(world, { ...pickAt(world), scale: view.scale })
     }
     if (pointers.current.size === 0) gesture.current = null
   }
