@@ -113,6 +113,75 @@ export function smartSnap(point, walls, { grid = GRID, radius = 25 } = {}) {
   return { x, y, snapped: ax !== null || ay !== null ? 'align' : 'grid' }
 }
 
+/** Extrémités distinctes de l'ensemble des murs */
+export function uniqueNodes(walls) {
+  const map = new Map()
+  for (const wall of walls) {
+    for (const p of [wall.a, wall.b]) {
+      const key = `${Math.round(p.x / NODE_TOLERANCE)}:${Math.round(p.y / NODE_TOLERANCE)}`
+      if (!map.has(key)) map.set(key, { key, x: p.x, y: p.y })
+    }
+  }
+  return [...map.values()]
+}
+
+/**
+ * Aimantation pendant un déplacement, avec repères d'alignement.
+ *
+ * Ordre de priorité : une extrémité existante, puis un point le long d'un mur,
+ * puis l'alignement sur l'axe d'un point voisin, et enfin la grille. Les deux
+ * premiers créent une vraie connexion, le troisième renvoie des repères à
+ * afficher pour que l'utilisateur comprenne ce sur quoi il s'aligne.
+ */
+export function snapDrag(world, walls, options = {}) {
+  const { excludeWallIds = [], ignoreNear = null, radius = 25, grid = GRID } = options
+  const skip = (p) => ignoreNear && dist(p, ignoreNear) <= NODE_TOLERANCE
+
+  let best = null
+  for (const wall of walls) {
+    for (const p of [wall.a, wall.b]) {
+      if (skip(p)) continue
+      const d = dist(world, p)
+      if (d < radius && (!best || d < best.d)) best = { d, p }
+    }
+  }
+  if (best) return { point: { x: best.p.x, y: best.p.y }, snapped: 'node', guides: [] }
+
+  let onWall = null
+  for (const wall of walls) {
+    if (excludeWallIds.includes(wall.id)) continue
+    const pr = projectOnSegment(world, wall.a, wall.b)
+    if (pr.distance < radius && pr.t > 0.02 && pr.t < 0.98 && (!onWall || pr.distance < onWall.distance)) {
+      onWall = pr
+    }
+  }
+  if (onWall) {
+    return {
+      point: { x: Math.round(onWall.point.x), y: Math.round(onWall.point.y) },
+      snapped: 'wall',
+      guides: [],
+    }
+  }
+
+  let ax = null
+  let ay = null
+  for (const wall of walls) {
+    for (const p of [wall.a, wall.b]) {
+      if (skip(p)) continue
+      if (Math.abs(world.x - p.x) < radius && (!ax || Math.abs(world.x - p.x) < Math.abs(world.x - ax.x))) ax = p
+      if (Math.abs(world.y - p.y) < radius && (!ay || Math.abs(world.y - p.y) < Math.abs(world.y - ay.y))) ay = p
+    }
+  }
+  const point = {
+    x: ax ? ax.x : snap(world.x, grid),
+    y: ay ? ay.y : snap(world.y, grid),
+  }
+  const guides = []
+  if (ax) guides.push({ x1: ax.x, y1: ax.y, x2: point.x, y2: point.y })
+  if (ay) guides.push({ x1: ay.x, y1: ay.y, x2: point.x, y2: point.y })
+  return { point, snapped: ax || ay ? 'align' : 'grid', guides }
+}
+
 /** Contraint b à être exactement horizontal ou vertical par rapport à a */
 export function orthoConstrain(a, b) {
   const dx = Math.abs(b.x - a.x)

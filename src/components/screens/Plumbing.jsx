@@ -23,6 +23,7 @@ export default function Plumbing() {
   const [mode, setMode] = useState('view') // view | add | exit
   const [pendingType, setPendingType] = useState(null)
   const [selected, setSelected] = useState(null)
+  const [activeHandleId, setActiveHandleId] = useState(null)
 
   const surfaces = useMemo(() => computeSurfaces(plan), [plan])
   const network = useMemo(() => computePlumbing(plan, surfaces), [plan, surfaces])
@@ -71,6 +72,46 @@ export default function Plumbing() {
     setSelected(hit || null)
   }
 
+  /* ------------------------------------ déplacement des appareils au doigt */
+
+  const handles = useMemo(() => {
+    if (mode !== 'view') return []
+    const list = (plan.equipment || []).map(e => ({
+      id: `eq:${e.id}`, kind: 'equipment', equipmentId: e.id, point: e.point,
+    }))
+    if (network.exit) {
+      list.push({ id: 'exit', kind: 'exit', point: network.exit })
+    }
+    return list
+  }, [plan.equipment, network.exit, mode])
+
+  const pickHandle = (world, tolerance) => {
+    if (mode !== 'view') return null
+    let best = null
+    for (const handle of handles) {
+      const d = Math.hypot(handle.point.x - world.x, handle.point.y - world.y)
+      if (d <= tolerance && (!best || d < best.d)) best = { d, handle }
+    }
+    return best?.handle || null
+  }
+
+  const applyDrag = (handle, world) => {
+    const point = { x: Math.round(world.x / 5) * 5, y: Math.round(world.y / 5) * 5 }
+    if (handle.kind === 'exit') {
+      updatePlan({ plumbing: { ...(plan.plumbing || {}), exit: point } })
+      return
+    }
+    updatePlan({
+      equipment: (plan.equipment || []).map(e => (e.id === handle.equipmentId ? { ...e, point } : e)),
+    })
+  }
+
+  const endDrag = (handle, world, moved) => {
+    setActiveHandleId(null)
+    if (moved || handle.kind === 'exit') return
+    setSelected((plan.equipment || []).find(e => e.id === handle.equipmentId) || null)
+  }
+
   const removeEquipment = (id) => {
     updatePlan({ equipment: (plan.equipment || []).filter(e => e.id !== id) })
     setSelected(null)
@@ -98,6 +139,12 @@ export default function Plumbing() {
           routes={network.routes}
           reservations={network.reservations}
           showDimensions={false}
+          handles={handles}
+          activeHandleId={activeHandleId}
+          onPickHandle={pickHandle}
+          onDragStart={h => setActiveHandleId(h.id)}
+          onDragMove={applyDrag}
+          onDragEnd={endDrag}
           onTap={handleTap}
           height={360}
         />
@@ -116,7 +163,7 @@ export default function Plumbing() {
             ? `Touchez l'endroit exact où poser ${EQUIPMENT_BY_ID[pendingType].label.toLowerCase()}.`
             : mode === 'exit'
               ? "Touchez le point où le collecteur sort du bâtiment vers l'égout ou la fosse."
-              : "Les cercles rouges sont les réservations à percer dans la dalle, les traits bleus les évacuations."}
+              : "Faites glisser un appareil pour le déplacer : les réservations et les longueurs se recalculent en direct. Les cercles rouges sont les percements à prévoir dans la dalle."}
         </p>
       </div>
 

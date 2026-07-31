@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   MousePointer2, PenLine, DoorOpen, Home, Undo2, Trash2, Maximize2,
@@ -8,8 +8,9 @@ import Header from '../layout/Header'
 import PlanCanvas from '../plan/PlanCanvas'
 import { useApp } from '../../contexts/AppContext'
 import {
-  makeWall, smartSnap, orthoConstrain, dist,
+  makeWall, smartSnap, orthoConstrain, dist, lerp, snap,
   rectanglePlan, setWallLength, projectOnSegment, healDanglingEnds,
+  uniqueNodes, snapDrag, NODE_TOLERANCE,
 } from '../../lib/geometry'
 import { computeSurfaces } from '../../lib/metre'
 import { STRUCTURE_TYPES, STRUCTURE_BY_ID, ROOM_TYPES, ROOF_TYPES } from '../../data/prices'
@@ -23,7 +24,7 @@ const OPENING_KINDS = [
 ]
 
 const MODES = [
-  { id: 'view', label: 'Voir', icon: MousePointer2 },
+  { id: 'view', label: 'Modifier', icon: MousePointer2 },
   { id: 'draw', label: 'Murs', icon: PenLine },
   { id: 'opening', label: 'Ouvertures', icon: DoorOpen },
   { id: 'room', label: 'Pièces', icon: Home },
@@ -42,6 +43,12 @@ export default function PlanEditor() {
   const [selectedRoomId, setSelectedRoomId] = useState(null)
   const [selectedOpeningId, setSelectedOpeningId] = useState(null)
   const [sheet, setSheet] = useState(null) // 'rect' | 'settings' | null
+  const [activeHandleId, setActiveHandleId] = useState(null)
+  const [guides, setGuides] = useState([])
+  const [historyDepth, setHistoryDepth] = useState(0)
+  const dragRef = useRef(null)
+  const historyRef = useRef([])
+  const sheetTouchedRef = useRef(false)
 
   const plan = activePlan
   const surfaces = useMemo(() => computeSurfaces(plan), [plan])
@@ -51,6 +58,11 @@ export default function PlanEditor() {
   const structure = STRUCTURE_BY_ID[plan.structure] || STRUCTURE_TYPES[0]
   const defaultThickness = wallKind === 'porteur' ? structure.thickness : 7
 
+  // Chaque ouverture de panneau redémarre un nouveau point d'annulation
+  useEffect(() => {
+    sheetTouchedRef.current = false
+  }, [selectedWallId, selectedOpeningId])
+
   const selectedWall = walls.find(w => w.id === selectedWallId) || null
   const selectedRoom = rooms.find(r => r.id === selectedRoomId) || null
   const selectedOpening = (plan.openings || []).find(o => o.id === selectedOpeningId) || null
@@ -59,11 +71,207 @@ export default function PlanEditor() {
 
   const setWalls = (next) => updatePlan({ walls: next })
 
+  /* ------------------------------------------------------------ annulation */
+
+  /**
+   * Historique local des états du plan. Avec la manipulation directe, un geste
+   * malheureux arrive vite : on empile un instantané avant chaque modification
+   * pour pouvoir revenir en arrière. L'historique n'est pas persisté, il ne
+   * vaut que pour la session d'édition en cours.
+   */
+  const pushHistory = () => {
+    historyRef.current.push({
+      walls: plan.walls,
+      openings: plan.openings,
+      roomMeta: plan.roomMeta,
+    })
+    if (historyRef.current.length > 40) historyRef.current.shift()
+    setHistoryDepth(historyRef.current.length)
+  }
+
+  /**
+   * Les panneaux de réglage appliquent en direct, souvent à chaque frappe.
+   * On n'empile donc qu'un seul instantané par ouverture de panneau, sinon
+   * annuler reviendrait à défaire caractère par caractère.
+   */
+  const pushHistoryOnce = () => {
+    if (sheetTouchedRef.current) return
+    sheetTouchedRef.current = true
+    pushHistory()
+  }
+
+  const undo = () => {
+    const previous = historyRef.current.pop()
+    setHistoryDepth(historyRef.current.length)
+    if (!previous) return
+    updatePlan(previous)
+    setSelectedWallId(null)
+    setSelectedOpeningId(null)
+    setDraft(null)
+  }
+
   /** Fin d'un tracé : on raccroche les extrémités restées en l'air */
   const finishDrawing = (currentWalls = walls) => {
     setWalls(healDanglingEnds(currentWalls))
     setDraft(null)
     setMode('view')
+  }
+
+  /* ------------------------------------------------ manipulation directe */
+
+  const handles = useMemo(() => {
+    if (mode !== 'view') return []
+    const list = uniqueNodes(walls).map(node => ({
+      id: `n:${node.key}`,
+      kind: 'node',
+      point: { x: node.x, y: node.y },
+    }))
+    for (const opening of plan.openings || []) {
+      const wall = walls.find(w => w.id === opening.wallId)
+      if (!wall) continue
+      const len = dist(wall.a, wall.b)
+      if (len < 1) continue
+      list.push({
+        id: `o:${opening.id}`,
+        kind: 'opening',
+        openingId: opening.id,
+        point: lerp(wall.a, wall.b, Math.min(1, opening.offset / len)),
+      })
+    }
+    return list
+  }, [walls, plan.openings, mode])
+
+  const pickHandle = (world, tolerance) => {
+    if (mode !== 'view') return null
+
+    let best = null
+    for (const handle of handles) {
+      const d = dist(world, handle.point)
+      if (d <= tolerance && (!best || d < best.d)) best = { d, handle }
+    }
+    if (best) return best.handle
+
+    // À défaut, le corps du mur lui-même se saisit
+    for (const wall of walls) {
+      const p = projectOnSegment(world, wall.a, wall.b)
+      if (p.distance <= Math.max(tolerance * 0.65, wall.thickness / 2 + 4)) {
+        return { id: `w:${wall.id}`, kind: 'wall', wallId: wall.id, point: p.point }
+      }
+    }
+    return null
+  }
+
+  const beginDrag = (handle) => {
+    setActiveHandleId(handle.id)
+    pushHistory()
+    const originals = new Map(walls.map(w => [w.id, { a: { ...w.a }, b: { ...w.b } }]))
+
+    if (handle.kind === 'node') {
+      const affected = []
+      for (const wall of walls) {
+        if (dist(wall.a, handle.point) <= NODE_TOLERANCE) affected.push({ id: wall.id, key: 'a' })
+        if (dist(wall.b, handle.point) <= NODE_TOLERANCE) affected.push({ id: wall.id, key: 'b' })
+      }
+      dragRef.current = { kind: 'node', affected, originals, origin: { ...handle.point } }
+      return
+    }
+
+    if (handle.kind === 'wall') {
+      const wall = walls.find(w => w.id === handle.wallId)
+      if (!wall) return
+      const affected = []
+      for (const end of ['a', 'b']) {
+        for (const other of walls) {
+          if (dist(other.a, wall[end]) <= NODE_TOLERANCE) affected.push({ id: other.id, key: 'a' })
+          if (dist(other.b, wall[end]) <= NODE_TOLERANCE) affected.push({ id: other.id, key: 'b' })
+        }
+      }
+      dragRef.current = { kind: 'wall', wallId: wall.id, affected, originals, origin: { ...handle.point } }
+      return
+    }
+
+    if (handle.kind === 'opening') {
+      dragRef.current = { kind: 'opening', openingId: handle.openingId }
+    }
+  }
+
+  const applyDrag = (handle, world) => {
+    const drag = dragRef.current
+    if (!drag) return
+
+    if (drag.kind === 'node') {
+      const movingIds = [...new Set(drag.affected.map(a => a.id))]
+      const result = snapDrag(world, walls, {
+        excludeWallIds: movingIds,
+        ignoreNear: drag.origin,
+        radius: 25,
+      })
+      setGuides(result.guides)
+      setWalls(walls.map(w => {
+        const patches = drag.affected.filter(a => a.id === w.id)
+        if (!patches.length) return w
+        const next = { ...w }
+        for (const p of patches) next[p.key] = { x: result.point.x, y: result.point.y }
+        return next
+      }))
+      return
+    }
+
+    if (drag.kind === 'wall') {
+      const dx = snap(world.x - drag.origin.x)
+      const dy = snap(world.y - drag.origin.y)
+      setGuides([])
+      setWalls(walls.map(w => {
+        const patches = drag.affected.filter(a => a.id === w.id)
+        if (!patches.length) return w
+        const base = drag.originals.get(w.id)
+        const next = { ...w }
+        for (const p of patches) {
+          next[p.key] = { x: base[p.key].x + dx, y: base[p.key].y + dy }
+        }
+        return next
+      }))
+      return
+    }
+
+    if (drag.kind === 'opening') {
+      const opening = (plan.openings || []).find(o => o.id === drag.openingId)
+      if (!opening) return
+      // On autorise le passage d'un mur à l'autre : on cherche le mur le plus
+      // proche du doigt, puis on borne la position pour que l'ouverture y tienne.
+      let target = null
+      for (const wall of walls) {
+        const p = projectOnSegment(world, wall.a, wall.b)
+        const len = dist(wall.a, wall.b)
+        if (len < opening.width + 20) continue
+        if (!target || p.distance < target.distance) target = { wall, ...p, len }
+      }
+      if (!target) return
+      const half = opening.width / 2
+      const offset = Math.round(Math.min(target.len - half, Math.max(half, target.t * target.len)))
+      updatePlan({
+        openings: (plan.openings || []).map(o =>
+          (o.id === opening.id ? { ...o, wallId: target.wall.id, offset } : o)),
+      })
+    }
+  }
+
+  const endDrag = (handle, world, moved) => {
+    setActiveHandleId(null)
+    setGuides([])
+    const drag = dragRef.current
+    dragRef.current = null
+
+    if (!moved) {
+      // Un appui sans déplacement reste une sélection
+      if (handle.kind === 'wall') { setSelectedWallId(handle.wallId); setSelectedRoomId(null); setSelectedOpeningId(null) }
+      else if (handle.kind === 'opening') { setSelectedOpeningId(handle.openingId); setSelectedWallId(null); setSelectedRoomId(null) }
+      return
+    }
+
+    // Après un déplacement de mur entier, on rattrape les extrémités laissées
+    // à quelques centimètres d'un autre mur.
+    if (drag?.kind === 'wall') setWalls(healDanglingEnds(walls))
   }
 
   const handleTap = (world, pick) => {
@@ -88,6 +296,7 @@ export default function PlanEditor() {
       const last = draft.points[draft.points.length - 1]
       if (dist(last, point) < 15) return // double tap au même endroit
 
+      pushHistory()
       const wall = makeWall(last, point, { thickness: defaultThickness, kind: wallKind })
       setWalls([...walls, wall])
 
@@ -108,6 +317,7 @@ export default function PlanEditor() {
       const kind = OPENING_KINDS[0]
       const offset = Math.min(Math.max(pick.wall.t * len, kind.width / 2), len - kind.width / 2)
       if (len < kind.width + 10) return
+      pushHistory()
       const opening = {
         id: `o${Date.now().toString(36)}`,
         wallId: wall.id,
@@ -149,19 +359,8 @@ export default function PlanEditor() {
     }
   }
 
-  const undoLastWall = () => {
-    if (!walls.length) return
-    const next = walls.slice(0, -1)
-    setWalls(next)
-    if (draft && draft.points.length > 1) {
-      setDraft({ points: draft.points.slice(0, -1) })
-    } else {
-      setDraft(null)
-    }
-  }
-
   const deleteWall = (id) => {
-    setWalls(walls.filter(w => w.id !== id))
+    pushHistory()
     updatePlan({
       walls: walls.filter(w => w.id !== id),
       openings: (plan.openings || []).filter(o => o.wallId !== id),
@@ -173,6 +372,7 @@ export default function PlanEditor() {
     const w = Math.round(widthM * 100)
     const d = Math.round(depthM * 100)
     if (w < 200 || d < 200) return
+    pushHistory()
     updatePlan({ walls: [...walls, ...rectanglePlan(w, d, structure.thickness)] })
     setSheet(null)
     setMode('view')
@@ -237,6 +437,13 @@ export default function PlanEditor() {
           draft={draft}
           selectedWallId={selectedWallId}
           selectedRoomId={selectedRoomId}
+          handles={handles}
+          activeHandleId={activeHandleId}
+          guides={guides}
+          onPickHandle={pickHandle}
+          onDragStart={beginDrag}
+          onDragMove={applyDrag}
+          onDragEnd={endDrag}
           onTap={handleTap}
           height={380}
         />
@@ -249,15 +456,14 @@ export default function PlanEditor() {
           >
             <Maximize2 size={16} className="text-gray-600" />
           </button>
-          {walls.length > 0 && (
-            <button
-              onClick={undoLastWall}
-              className="w-9 h-9 bg-white/95 border border-gray-200 rounded-xl flex items-center justify-center shadow-sm active:bg-gray-100"
-              aria-label="Annuler"
-            >
-              <Undo2 size={16} className="text-gray-600" />
-            </button>
-          )}
+          <button
+            onClick={undo}
+            disabled={historyDepth === 0}
+            className="w-9 h-9 bg-white/95 border border-gray-200 rounded-xl flex items-center justify-center shadow-sm active:bg-gray-100 disabled:opacity-35"
+            aria-label="Annuler"
+          >
+            <Undo2 size={16} className="text-gray-600" />
+          </button>
         </div>
 
         {mode === 'draw' && (
@@ -426,8 +632,14 @@ export default function PlanEditor() {
         <WallSheet
           wall={selectedWall}
           onClose={() => setSelectedWallId(null)}
-          onChange={(patch) => setWalls(walls.map(w => (w.id === selectedWall.id ? { ...w, ...patch } : w)))}
-          onLength={(cm) => setWalls(setWallLength(walls, selectedWall.id, cm))}
+          onChange={(patch) => {
+            pushHistoryOnce()
+            setWalls(walls.map(w => (w.id === selectedWall.id ? { ...w, ...patch } : w)))
+          }}
+          onLength={(cm) => {
+            pushHistoryOnce()
+            setWalls(setWallLength(walls, selectedWall.id, cm))
+          }}
           onDelete={() => deleteWall(selectedWall.id)}
         />
       )}
@@ -447,10 +659,14 @@ export default function PlanEditor() {
           opening={selectedOpening}
           wall={walls.find(w => w.id === selectedOpening.wallId)}
           onClose={() => setSelectedOpeningId(null)}
-          onChange={(patch) => updatePlan({
-            openings: (plan.openings || []).map(o => (o.id === selectedOpening.id ? { ...o, ...patch } : o)),
-          })}
+          onChange={(patch) => {
+            pushHistoryOnce()
+            updatePlan({
+              openings: (plan.openings || []).map(o => (o.id === selectedOpening.id ? { ...o, ...patch } : o)),
+            })
+          }}
           onDelete={() => {
+            pushHistory()
             updatePlan({ openings: (plan.openings || []).filter(o => o.id !== selectedOpening.id) })
             setSelectedOpeningId(null)
           }}
@@ -483,7 +699,9 @@ function Stat({ label, value, tone }) {
 
 function ModeHelp({ mode, isEmpty, drafting }) {
   const texts = {
-    view: isEmpty ? null : 'Touchez un mur, une pièce ou une ouverture pour la modifier. Deux doigts pour zoomer.',
+    view: isEmpty
+      ? null
+      : "Faites glisser les ronds bleus pour déformer la maison, un mur pour le déplacer, un rond orange pour faire coulisser une ouverture. Touchez sans glisser pour ouvrir les réglages.",
     draw: drafting
       ? "Continuez à toucher pour poser les murs. Revenez sur le point de départ pour fermer le contour."
       : "Touchez l'écran pour poser le premier point. Les extrémités s'aimantent aux murs existants.",
@@ -541,55 +759,103 @@ function NumberField({ label, value, onChange, unit, step = 1, min, max, help })
   )
 }
 
+const THICKNESS_PRESETS = [
+  { value: 7, label: '7', hint: 'Cloison BA13' },
+  { value: 10, label: '10', hint: 'Cloison 98' },
+  { value: 20, label: '20', hint: 'Parpaing' },
+  { value: 30, label: '30', hint: 'Béton cell.' },
+  { value: 37, label: '37', hint: 'Monomur' },
+]
+
 function WallSheet({ wall, onClose, onChange, onLength, onDelete }) {
-  const [length, setLength] = useState((dist(wall.a, wall.b) / 100).toFixed(2))
+  const currentCm = Math.round(dist(wall.a, wall.b))
+  const [text, setText] = useState((currentCm / 100).toFixed(2))
+
+  // Le mur peut aussi bouger au doigt pendant que le panneau est ouvert :
+  // on resynchronise le champ pour qu'il reflète toujours la réalité.
+  useEffect(() => {
+    setText((currentCm / 100).toFixed(2))
+  }, [currentCm])
+
+  const apply = (cm) => onLength(Math.max(20, Math.round(cm)))
 
   return (
     <Sheet title="Mur" onClose={onClose}>
-      <div className="flex gap-2">
-        {[
-          { id: 'porteur', label: 'Mur porteur', desc: 'Structure' },
-          { id: 'cloison', label: 'Cloison', desc: 'Distribution' },
-        ].map(k => (
+      <div>
+        <label className="block text-sm font-semibold text-gray-700 mb-1">Longueur</label>
+        <div className="flex items-center gap-2">
           <button
-            key={k.id}
-            onClick={() => onChange({ kind: k.id, thickness: k.id === 'porteur' ? 20 : 7 })}
-            className={`flex-1 p-3 rounded-2xl border-2 text-left ${
-              wall.kind === k.id ? 'border-blue-500 bg-blue-50' : 'border-gray-100 bg-white'
-            }`}
+            onClick={() => apply(currentCm - 10)}
+            className="w-12 h-12 rounded-xl bg-gray-100 text-xl font-bold text-gray-700 active:bg-gray-200 flex-shrink-0"
           >
-            <p className="font-semibold text-sm text-gray-900">{k.label}</p>
-            <p className="text-xs text-gray-500">{k.desc}</p>
+            −
           </button>
-        ))}
-      </div>
-
-      <div className="flex gap-2 items-end">
-        <div className="flex-1">
-          <NumberField
-            label="Longueur"
-            value={length}
-            step={0.05}
-            unit="m"
-            onChange={setLength}
-            help="Modifie la position de l'extrémité, les murs connectés suivent."
-          />
+          <div className="flex-1 relative">
+            <input
+              type="text"
+              inputMode="decimal"
+              value={text}
+              onChange={e => {
+                setText(e.target.value)
+                const v = parseFloat(e.target.value.replace(',', '.'))
+                if (Number.isFinite(v) && v >= 0.2) apply(v * 100)
+              }}
+              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-center text-lg font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-400">m</span>
+          </div>
+          <button
+            onClick={() => apply(currentCm + 10)}
+            className="w-12 h-12 rounded-xl bg-gray-100 text-xl font-bold text-gray-700 active:bg-gray-200 flex-shrink-0"
+          >
+            +
+          </button>
         </div>
-        <button
-          onClick={() => onLength(Math.round(parseFloat(length.toString().replace(',', '.')) * 100))}
-          className="btn-primary mb-0.5 px-5"
-        >
-          OK
-        </button>
+        <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
+          La modification s'applique tout de suite : l'extrémité se déplace et les murs
+          qui y sont raccordés suivent.
+        </p>
       </div>
 
-      <NumberField
-        label="Épaisseur"
-        value={wall.thickness}
-        unit="cm"
-        onChange={v => onChange({ thickness: Math.max(4, parseInt(v, 10) || 20) })}
-        help="20 cm pour du parpaing, 7 cm pour une cloison BA13 sur rails de 48."
-      />
+      <div>
+        <label className="block text-sm font-semibold text-gray-700 mb-1">Type</label>
+        <div className="flex gap-2">
+          {[
+            { id: 'porteur', label: 'Mur porteur', desc: 'Structure' },
+            { id: 'cloison', label: 'Cloison', desc: 'Distribution' },
+          ].map(k => (
+            <button
+              key={k.id}
+              onClick={() => onChange({ kind: k.id, thickness: k.id === 'porteur' ? 20 : 7 })}
+              className={`flex-1 p-3 rounded-2xl border-2 text-left ${
+                wall.kind === k.id ? 'border-blue-500 bg-blue-50' : 'border-gray-100 bg-white'
+              }`}
+            >
+              <p className="font-semibold text-sm text-gray-900">{k.label}</p>
+              <p className="text-xs text-gray-500">{k.desc}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-semibold text-gray-700 mb-1">Épaisseur</label>
+        <div className="flex gap-1.5">
+          {THICKNESS_PRESETS.map(p => (
+            <button
+              key={p.value}
+              onClick={() => onChange({ thickness: p.value })}
+              className={`flex-1 py-2 rounded-xl border-2 ${
+                wall.thickness === p.value ? 'border-blue-500 bg-blue-50' : 'border-gray-100'
+              }`}
+            >
+              <p className="text-sm font-bold text-gray-900">{p.label}</p>
+              <p className="text-[9px] text-gray-500 leading-tight">{p.hint}</p>
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-gray-500 mt-1.5">Épaisseur actuelle : {wall.thickness} cm</p>
+      </div>
 
       <button
         onClick={onDelete}

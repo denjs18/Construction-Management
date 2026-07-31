@@ -12,6 +12,9 @@ import { wallsBoundingBox, dist, projectOnSegment, formatMeters, lerp, direction
 const MIN_SCALE = 0.05
 const MAX_SCALE = 3
 
+/** Rayon de saisie d'une poignée, en pixels écran */
+const HANDLE_TOUCH = 22
+
 const PlanCanvas = forwardRef(function PlanCanvas({
   walls = [],
   rooms = [],
@@ -25,6 +28,13 @@ const PlanCanvas = forwardRef(function PlanCanvas({
   selectedWallId = null,
   selectedRoomId = null,
   showDimensions = true,
+  handles = [],
+  activeHandleId = null,
+  guides = [],
+  onPickHandle,
+  onDragStart,
+  onDragMove,
+  onDragEnd,
   onTap,
   height = 420,
 }, ref) {
@@ -106,6 +116,15 @@ const PlanCanvas = forwardRef(function PlanCanvas({
     e.currentTarget.setPointerCapture(e.pointerId)
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     if (pointers.current.size === 1) {
+      const world = toWorld(e.clientX, e.clientY)
+      // Si le doigt se pose sur un élément saisissable, on le déplace au lieu
+      // de faire glisser la vue.
+      const handle = onPickHandle?.(world, HANDLE_TOUCH / view.scale)
+      if (handle) {
+        gesture.current = { type: 'drag', handle, startX: e.clientX, startY: e.clientY, moved: false }
+        onDragStart?.(handle, world)
+        return
+      }
       gesture.current = { type: 'maybe-tap', startX: e.clientX, startY: e.clientY, moved: false, view: { ...view } }
     } else if (pointers.current.size === 2) {
       const [p1, p2] = [...pointers.current.values()]
@@ -123,6 +142,13 @@ const PlanCanvas = forwardRef(function PlanCanvas({
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
     const g = gesture.current
     if (!g) return
+
+    if (g.type === 'drag') {
+      if (!g.moved && Math.hypot(e.clientX - g.startX, e.clientY - g.startY) < 3) return
+      g.moved = true
+      onDragMove?.(g.handle, toWorld(e.clientX, e.clientY))
+      return
+    }
 
     if (g.type === 'pinch' && pointers.current.size >= 2) {
       const [p1, p2] = [...pointers.current.values()]
@@ -159,6 +185,11 @@ const PlanCanvas = forwardRef(function PlanCanvas({
   const handlePointerUp = (e) => {
     const g = gesture.current
     pointers.current.delete(e.pointerId)
+    if (g && g.type === 'drag') {
+      onDragEnd?.(g.handle, toWorld(e.clientX, e.clientY), g.moved)
+      if (pointers.current.size === 0) gesture.current = null
+      return
+    }
     if (g && g.type === 'maybe-tap' && !g.moved && onTap) {
       const world = toWorld(e.clientX, e.clientY)
       // On transmet l'échelle : l'aimantage doit se sentir identique au doigt
@@ -374,6 +405,47 @@ const PlanCanvas = forwardRef(function PlanCanvas({
             </text>
           )
         })}
+
+        {/* Poignées de manipulation */}
+        {handles.map(handle => {
+          const active = handle.id === activeHandleId
+          if (handle.kind === 'node') {
+            return (
+              <g key={handle.id}>
+                <circle
+                  cx={handle.point.x} cy={handle.point.y} r={px(active ? 11 : 8)}
+                  fill="#FFFFFF" stroke="#2563EB" strokeWidth={px(2.5)}
+                />
+                <circle cx={handle.point.x} cy={handle.point.y} r={px(3)} fill="#2563EB" />
+              </g>
+            )
+          }
+          if (handle.kind === 'opening') {
+            return (
+              <circle
+                key={handle.id}
+                cx={handle.point.x} cy={handle.point.y} r={px(active ? 10 : 7)}
+                fill="#FFFFFF" stroke="#F97316" strokeWidth={px(2.5)}
+              />
+            )
+          }
+          return (
+            <circle
+              key={handle.id}
+              cx={handle.point.x} cy={handle.point.y} r={px(active ? 9 : 6)}
+              fill="#FFFFFF" stroke="#64748B" strokeWidth={px(2)}
+            />
+          )
+        })}
+
+        {/* Repères d'alignement pendant un déplacement */}
+        {guides.map((guide, i) => (
+          <line
+            key={i}
+            x1={guide.x1} y1={guide.y1} x2={guide.x2} y2={guide.y2}
+            stroke="#EC4899" strokeWidth={px(1)} strokeDasharray={`${px(6)} ${px(4)}`}
+          />
+        ))}
 
         {/* Tracé en cours */}
         {draft && draft.points.length > 0 && (

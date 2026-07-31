@@ -22,6 +22,7 @@ export default function Electrical() {
 
   const [pendingType, setPendingType] = useState(null)
   const [selected, setSelected] = useState(null)
+  const [activeHandleId, setActiveHandleId] = useState(null)
   const [tab, setTab] = useState('conformite')
 
   const surfaces = useMemo(() => computeSurfaces(plan), [plan])
@@ -65,6 +66,38 @@ export default function Electrical() {
     setSelected(hit || null)
   }
 
+  /* --------------------------- déplacement de l'appareillage au doigt */
+
+  const handles = useMemo(
+    () => (pendingType ? [] : (plan.electrical || []).map(d => ({
+      id: `el:${d.id}`, kind: 'device', deviceId: d.id, point: d.point,
+    }))),
+    [plan.electrical, pendingType],
+  )
+
+  const pickHandle = (world, tolerance) => {
+    if (pendingType) return null
+    let best = null
+    for (const handle of handles) {
+      const d = Math.hypot(handle.point.x - world.x, handle.point.y - world.y)
+      if (d <= tolerance && (!best || d < best.d)) best = { d, handle }
+    }
+    return best?.handle || null
+  }
+
+  const applyDrag = (handle, world) => {
+    const point = { x: Math.round(world.x / 5) * 5, y: Math.round(world.y / 5) * 5 }
+    updatePlan({
+      electrical: (plan.electrical || []).map(d => (d.id === handle.deviceId ? { ...d, point } : d)),
+    })
+  }
+
+  const endDrag = (handle, world, moved) => {
+    setActiveHandleId(null)
+    if (moved) return
+    setSelected((plan.electrical || []).find(d => d.id === handle.deviceId) || null)
+  }
+
   const removeDevice = (id) => {
     updatePlan({ electrical: (plan.electrical || []).filter(d => d.id !== id) })
     setSelected(null)
@@ -92,6 +125,12 @@ export default function Electrical() {
           electrical={canvasItems}
           routes={install.routes}
           showDimensions={false}
+          handles={handles}
+          activeHandleId={activeHandleId}
+          onPickHandle={pickHandle}
+          onDragStart={h => setActiveHandleId(h.id)}
+          onDragMove={applyDrag}
+          onDragEnd={endDrag}
           onTap={handleTap}
           height={360}
         />
@@ -108,7 +147,7 @@ export default function Electrical() {
         <p className="text-xs text-amber-800 leading-relaxed">
           {pendingType
             ? `Touchez l'emplacement de ${ITEM_BY_ID[pendingType].label.toLowerCase()}.`
-            : "Les traits pointillés sont les gaines, tracées uniquement à l'horizontale et à la verticale comme l'exige la norme."}
+            : "Faites glisser un appareillage pour le déplacer : les circuits et les gaines se retracent en direct. Les pointillés suivent uniquement l'horizontale et la verticale, comme l'exige la norme."}
         </p>
       </div>
 
