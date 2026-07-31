@@ -1,8 +1,9 @@
 import { NavLink } from 'react-router-dom'
-import { Home, CalendarDays, BookOpen, Wallet, Camera } from 'lucide-react'
+import { Home, CalendarDays, Ruler, BookOpen, Wallet, Camera } from 'lucide-react'
 
 const tabs = [
   { to: '/', icon: Home, label: 'Accueil' },
+  { to: '/plan', icon: Ruler, label: 'Plan' },
   { to: '/planning', icon: CalendarDays, label: 'Planning' },
   { to: '/guides', icon: BookOpen, label: 'Guides' },
   { to: '/budget', icon: Wallet, label: 'Budget' },
@@ -27,7 +28,7 @@ export default function BottomNav() {
             {({ isActive }) => (
               <>
                 <div className={`p-1 rounded-xl transition-colors ${isActive ? 'bg-blue-50' : ''}`}>
-                  <Icon size={22} strokeWidth={isActive ? 2.5 : 1.8} />
+                  <Icon size={20} strokeWidth={isActive ? 2.5 : 1.8} />
                 </div>
                 <span className={`text-[10px] font-medium ${isActive ? 'text-blue-600' : 'text-gray-400'}`}>
                   {label}

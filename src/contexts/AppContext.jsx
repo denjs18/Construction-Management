@@ -1,5 +1,6 @@
 import { createContext, useContext, useReducer, useEffect } from 'react'
 import { PROJECT_TEMPLATES, BUDGET_LOTS } from '../data/templates'
+import { createEmptyPlan, normalisePlan } from '../lib/metre'
 
 const AppContext = createContext(null)
 
@@ -36,6 +37,7 @@ function buildProjectFromTemplate(config) {
       expenses: [],
     },
     journal: [],
+    plan: createEmptyPlan(),
   }
 }
 
@@ -222,6 +224,17 @@ function reducer(state, action) {
       }
     }
 
+    case 'UPDATE_PLAN': {
+      const { projectId, plan } = action.payload
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (p.id !== projectId) return p
+          return { ...p, plan: { ...normalisePlan(p.plan), ...plan } }
+        }),
+      }
+    }
+
     case 'ADD_JOURNAL_ENTRY': {
       const { projectId, entry } = action.payload
       const newEntry = {
@@ -273,6 +286,12 @@ export function AppProvider({ children }) {
   }, [state])
 
   const activeProject = state.projects.find(p => p.id === state.activeProjectId) || null
+  const activePlan = activeProject ? normalisePlan(activeProject.plan) : null
+
+  const updatePlan = (patch) => {
+    if (!activeProject) return
+    dispatch({ type: 'UPDATE_PLAN', payload: { projectId: activeProject.id, plan: patch } })
+  }
 
   const getProjectProgress = (project) => {
     if (!project) return 0
@@ -300,7 +319,7 @@ export function AppProvider({ children }) {
   }
 
   return (
-    <AppContext.Provider value={{ state, dispatch, activeProject, getProjectProgress, getTotalSpent, getNextTasks }}>
+    <AppContext.Provider value={{ state, dispatch, activeProject, activePlan, updatePlan, getProjectProgress, getTotalSpent, getNextTasks }}>
       {children}
     </AppContext.Provider>
   )
