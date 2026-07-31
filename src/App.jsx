@@ -10,6 +10,7 @@ import Journal from './components/screens/Journal'
 import ProjectSetup from './components/screens/ProjectSetup'
 import PlanEditor from './components/screens/PlanEditor'
 import Estimate from './components/screens/Estimate'
+import View3D from './components/screens/View3D'
 
 function AppShell() {
   const { state } = useApp()
@@ -28,6 +29,7 @@ function AppShell() {
           <Route path="/guides" element={<Guides />} />
           <Route path="/guides/:id" element={<GuideDetail />} />
           <Route path="/plan" element={<PlanEditor />} />
+          <Route path="/plan/3d" element={<View3D />} />
           <Route path="/chiffrage" element={<Estimate />} />
           <Route path="/budget" element={<Budget />} />
           <Route path="/journal" element={<Journal />} />
