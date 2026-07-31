@@ -18,7 +18,7 @@ import {
   wallsBoundingBox,
 } from './geometry'
 import { PRICE_BY_ID, STRUCTURE_BY_ID, ROOM_TYPE_BY_ID, priceOf } from '../data/prices'
-import { planElectricalNeeds } from './electrical'
+import { planElectricalNeeds, computeElectrical } from './electrical'
 import { computePlumbing } from './plumbing'
 
 /* ---------------------------------------------------------------- le plan */
@@ -75,12 +75,18 @@ export function normalisePlan(plan) {
 
 /* -------------------------------------------------- résolution des pièces */
 
-const AREA_GUESS = [
-  { max: 2.5, type: 'wc' },
-  { max: 6, type: 'sdb' },
-  { max: 12, type: 'chambre' },
-  { max: 1e9, type: 'sejour' },
-]
+/**
+ * Devinette du type de pièce tant que l'utilisateur ne l'a pas renseigné.
+ * Les pièces arrivent triées par surface décroissante : la plus grande est
+ * presque toujours le séjour, les suivantes se devinent à la surface.
+ */
+function guessRoomType(area, rank) {
+  if (rank === 0) return 'sejour'
+  if (area <= 2.5) return 'wc'
+  if (area <= 6) return 'sdb'
+  if (area <= 8) return 'couloir'
+  return 'chambre'
+}
 
 /**
  * Rattache les types de pièces enregistrés aux pièces détectées.
@@ -102,8 +108,7 @@ export function resolveRooms(plan) {
         break
       }
     }
-    const guessed = AREA_GUESS.find(g => room.area <= g.max).type
-    const type = meta?.type || guessed
+    const type = meta?.type || guessRoomType(room.area, index)
     const typeInfo = ROOM_TYPE_BY_ID[type] || ROOM_TYPE_BY_ID.autre
     return {
       ...room,
@@ -302,13 +307,27 @@ export function computeQuantities(plan) {
     `Traitement des joints sur ${round2(plasterArea)} m² de plaques`)
 
   /* --- Électricité --- */
+  // Tant que rien n'est dessiné, on s'appuie sur les minimums de la norme.
+  // Dès qu'un appareillage est posé, on chiffre l'installation réelle.
   const elec = planElectricalNeeds(s.rooms, opts)
-  add('tableau-electrique', 1, STAGE.SECOND,
-    `${elec.circuits.length} circuits, ${elec.differentials.length} interrupteurs différentiels`)
-  add('point-electrique', elec.totalPoints, STAGE.SECOND,
-    `${elec.sockets} prises, ${elec.lights} points lumineux, ${elec.network} RJ45, ${elec.tv} prises TV`)
-  add('circuit-specialise', elec.specialCircuits.length, STAGE.SECOND,
-    elec.specialCircuits.map(c => c.label).join(', '))
+  const drawnElec = (plan.electrical || []).filter(d => d.type !== 'tableau')
+
+  if (drawnElec.length) {
+    const install = computeElectrical(plan, s)
+    add('tableau-electrique', 1, STAGE.SECOND,
+      `${install.circuits.length} circuits, ${install.differentials.length} interrupteurs différentiels`)
+    add('point-electrique', install.totals.devices, STAGE.SECOND,
+      `Relevé sur le plan : ${install.totals.devices} points, ${install.totals.conduitLength.toFixed(0)} m de gaine`)
+    add('circuit-specialise', install.circuits.filter(c => c.kind === 'special').length, STAGE.SECOND,
+      install.circuits.filter(c => c.kind === 'special').map(c => c.label).join(', '))
+  } else {
+    add('tableau-electrique', 1, STAGE.SECOND,
+      `${elec.circuits.length} circuits, ${elec.differentials.length} interrupteurs différentiels`)
+    add('point-electrique', elec.totalPoints, STAGE.SECOND,
+      `Minimums NF C 15-100 : ${elec.sockets} prises, ${elec.lights} points lumineux, ${elec.network} RJ45`)
+    add('circuit-specialise', elec.specialCircuits.length, STAGE.SECOND,
+      elec.specialCircuits.map(c => c.label).join(', '))
+  }
   if (isNew) add('consuel', 1, STAGE.DIVERS, 'Contrôle obligatoire avant mise en service')
 
   /* --- Plomberie --- */

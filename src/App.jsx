@@ -12,6 +12,7 @@ import PlanEditor from './components/screens/PlanEditor'
 import Estimate from './components/screens/Estimate'
 import View3D from './components/screens/View3D'
 import Plumbing from './components/screens/Plumbing'
+import Electrical from './components/screens/Electrical'
 
 function AppShell() {
   const { state } = useApp()
@@ -32,6 +33,7 @@ function AppShell() {
           <Route path="/plan" element={<PlanEditor />} />
           <Route path="/plan/3d" element={<View3D />} />
           <Route path="/plan/plomberie" element={<Plumbing />} />
+          <Route path="/plan/electricite" element={<Electrical />} />
           <Route path="/chiffrage" element={<Estimate />} />
           <Route path="/budget" element={<Budget />} />
           <Route path="/journal" element={<Journal />} />

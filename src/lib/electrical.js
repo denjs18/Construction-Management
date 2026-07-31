@@ -11,6 +11,95 @@
  * mise en service, y compris en auto-construction.
  */
 
+import { dist, projectOnSegment, pointInPolygon } from './geometry'
+
+/* ---------------------------------------------------------- appareillage */
+
+export const ELECTRICAL_ITEMS = [
+  {
+    id: 'prise', label: 'Prise 16 A', icon: '🔌', category: 'sockets',
+    layer: 'sol', height: 25, section: 2.5, breaker: 20,
+    note: "Axe entre 5 cm et 1,30 m du sol fini. Comptez au moins une prise par tranche de 4 m² dans le séjour.",
+  },
+  {
+    id: 'prise-plan', label: 'Prise plan de travail', icon: '🔌', category: 'sockets',
+    layer: 'plafond', height: 110, section: 2.5, breaker: 20,
+    note: "À 1,10 m du sol, soit environ 20 cm au-dessus du plan de travail. Jamais au-dessus de l'évier ni des plaques.",
+  },
+  {
+    id: 'interrupteur', label: 'Interrupteur', icon: '🎚️', category: 'lights',
+    layer: 'plafond', height: 110, section: 1.5, breaker: 16,
+    note: "Entre 0,90 m et 1,30 m, à 15 cm environ du bord de la porte, côté poignée.",
+  },
+  {
+    id: 'va-et-vient', label: 'Va-et-vient', icon: '🔀', category: 'lights',
+    layer: 'plafond', height: 110, section: 1.5, breaker: 16,
+    note: "Deux points de commande pour un même éclairage. Obligatoire de fait dans un couloir traversant.",
+  },
+  {
+    id: 'point-lumineux', label: 'Point lumineux', icon: '💡', category: 'lights',
+    layer: 'plafond', height: 250, section: 1.5, breaker: 16,
+    note: "Boîte DCL en plafond, avec fil de terre même pour un luminaire de classe II.",
+  },
+  {
+    id: 'applique', label: 'Applique murale', icon: '🔦', category: 'lights',
+    layer: 'plafond', height: 180, section: 1.5, breaker: 16,
+    note: 'Au-dessus du lavabo, prévoyez un matériel IPX4 si vous êtes en volume 2.',
+  },
+  {
+    id: 'rj45', label: 'Prise RJ45', icon: '🌐', category: 'network',
+    layer: 'sol', height: 25, section: 0, breaker: 0,
+    note: "Courant faible : la gaine doit être distincte de celle des courants forts. Câble catégorie 6 vers le coffret de communication.",
+  },
+  {
+    id: 'tv', label: 'Prise TV', icon: '📺', category: 'tv',
+    layer: 'sol', height: 25, section: 0, breaker: 0,
+    note: 'Courant faible également. Prévoyez une prise 16 A juste à côté.',
+  },
+  {
+    id: 'four', label: 'Four', icon: '🔥', category: 'special',
+    layer: 'sol', height: 25, section: 2.5, breaker: 20, special: 'four',
+    note: 'Circuit dédié en 2,5 mm² protégé par un disjoncteur 20 A.',
+  },
+  {
+    id: 'plaque', label: 'Plaque de cuisson', icon: '🍳', category: 'special',
+    layer: 'sol', height: 25, section: 6, breaker: 32, special: 'plaque',
+    note: 'Circuit dédié en 6 mm² protégé par un disjoncteur 32 A, sur différentiel type A.',
+  },
+  {
+    id: 'lave-linge', label: 'Lave-linge', icon: '🧺', category: 'special',
+    layer: 'sol', height: 25, section: 2.5, breaker: 20, special: 'lave-linge',
+    note: 'Circuit dédié obligatoire, sur différentiel type A.',
+  },
+  {
+    id: 'lave-vaisselle', label: 'Lave-vaisselle', icon: '🍴', category: 'special',
+    layer: 'sol', height: 25, section: 2.5, breaker: 20, special: 'lave-vaisselle',
+    note: 'Circuit dédié obligatoire.',
+  },
+  {
+    id: 'tableau', label: 'Tableau électrique', icon: '⚡', category: 'panel',
+    layer: 'sol', height: 120, section: 0, breaker: 0,
+    note: "Dans la GTL : un volume de 60 cm de large sur toute la hauteur, libre de tout autre équipement. Poignées entre 0,90 m et 1,80 m.",
+  },
+]
+
+export const ITEM_BY_ID = Object.fromEntries(ELECTRICAL_ITEMS.map(i => [i.id, i]))
+
+/** Appareillage conseillé pour un type de pièce */
+export function suggestedItems(roomType) {
+  const base = ['prise', 'interrupteur', 'point-lumineux']
+  switch (roomType) {
+    case 'cuisine': return ['prise', 'prise-plan', 'interrupteur', 'point-lumineux', 'four', 'plaque', 'lave-vaisselle']
+    case 'sejour': return [...base, 'rj45', 'tv']
+    case 'chambre':
+    case 'bureau': return [...base, 'rj45']
+    case 'sdb': return ['prise', 'interrupteur', 'point-lumineux', 'applique']
+    case 'buanderie': return [...base, 'lave-linge']
+    case 'couloir': return ['va-et-vient', 'point-lumineux', 'prise']
+    default: return base
+  }
+}
+
 /* ------------------------------------------------------- minimums par pièce */
 
 /**
@@ -246,3 +335,305 @@ export const CABLE_SECTIONS = [
   { section: 4, breaker: 25, usage: 'Chauffage électrique jusqu\'à 5 750 W' },
   { section: 6, breaker: 32, usage: 'Plaque de cuisson, borne de recharge' },
 ]
+
+/* ================================================================== */
+/*  Installation dessinée : circuits, cheminement des gaines, contrôle  */
+/* ================================================================== */
+
+/** Chemin orthogonal entre deux points, coude gardé à l'intérieur si possible */
+function orthogonalPath(from, to, isInside) {
+  if (Math.abs(from.x - to.x) < 1 || Math.abs(from.y - to.y) < 1) return [from, to]
+  const c1 = { x: to.x, y: from.y }
+  const c2 = { x: from.x, y: to.y }
+  const ok1 = isInside(c1)
+  const ok2 = isInside(c2)
+  if (ok1 && !ok2) return [from, c1, to]
+  if (ok2 && !ok1) return [from, c2, to]
+  return Math.abs(to.x - from.x) >= Math.abs(to.y - from.y) ? [from, c1, to] : [from, c2, to]
+}
+
+function pathLength(points) {
+  let total = 0
+  for (let i = 0; i < points.length - 1; i++) total += dist(points[i], points[i + 1])
+  return total
+}
+
+/**
+ * Répartit les appareils placés en circuits.
+ *
+ * On regroupe pièce par pièce, comme le ferait un électricien, puis on ouvre un
+ * nouveau circuit dès que la limite de points est atteinte. Chaque appareil
+ * spécialisé prend son propre circuit, comme l'impose la norme.
+ */
+export function assignCircuits(devices, rooms) {
+  const roomOf = (device) => rooms.find(r => pointInPolygon(device.point, r.points)) || null
+
+  const circuits = []
+  const groupByCategory = { sockets: [], lights: [], network: [], tv: [] }
+
+  for (const device of devices) {
+    const spec = ITEM_BY_ID[device.type]
+    if (!spec || spec.category === 'panel') continue
+    if (spec.category === 'special') {
+      circuits.push({
+        id: `spe-${device.id}`,
+        label: spec.label,
+        kind: 'special',
+        section: spec.section,
+        breaker: spec.breaker,
+        devices: [device],
+        differentialType: ['plaque', 'lave-linge'].includes(spec.special) ? 'A' : 'AC',
+      })
+    } else {
+      groupByCategory[spec.category].push({ ...device, room: roomOf(device) })
+    }
+  }
+
+  const pack = (list, kind, label, limit, section, breaker) => {
+    // regroupement par pièce pour garder des circuits cohérents sur le terrain
+    const byRoom = new Map()
+    for (const device of list) {
+      const key = device.room?.id || 'hors-piece'
+      if (!byRoom.has(key)) byRoom.set(key, [])
+      byRoom.get(key).push(device)
+    }
+    let current = null
+    let index = 0
+    for (const [, group] of byRoom) {
+      for (const device of group) {
+        if (!current || current.devices.length >= limit) {
+          index += 1
+          current = {
+            id: `${kind}-${index}`,
+            label: `${label} ${index}`,
+            kind,
+            section,
+            breaker,
+            devices: [],
+            differentialType: 'AC',
+          }
+          circuits.push(current)
+        }
+        current.devices.push(device)
+      }
+    }
+  }
+
+  pack(groupByCategory.sockets, 'sockets', 'Prises', CIRCUIT_LIMITS.sockets.perCircuit, 2.5, 20)
+  pack(groupByCategory.lights, 'lights', 'Éclairage', CIRCUIT_LIMITS.lights.perCircuit, 1.5, 16)
+  if (groupByCategory.network.length) {
+    circuits.push({
+      id: 'reseau', label: 'Réseau RJ45', kind: 'network', section: 0, breaker: 0,
+      devices: groupByCategory.network, differentialType: null,
+    })
+  }
+  if (groupByCategory.tv.length) {
+    circuits.push({
+      id: 'tv', label: 'Antenne TV', kind: 'tv', section: 0, breaker: 0,
+      devices: groupByCategory.tv, differentialType: null,
+    })
+  }
+
+  return circuits
+}
+
+/**
+ * Trace les gaines, circuit par circuit.
+ *
+ * Le cheminement part du tableau et enchaîne les appareils du plus proche au
+ * plus proche, en tracés strictement horizontaux et verticaux : la norme
+ * interdit les diagonales pour qu'on puisse deviner où passent les câbles
+ * avant de percer un mur.
+ */
+export function routeElectrical(circuits, panel, rooms) {
+  const isInside = (p) => rooms.some(r => pointInPolygon(p, r.points))
+  const routes = []
+
+  for (const circuit of circuits) {
+    const remaining = [...circuit.devices]
+    let cursor = panel
+    const points = [panel]
+    let horizontal = 0
+
+    while (remaining.length) {
+      let bestIndex = 0
+      let bestDist = Infinity
+      for (let i = 0; i < remaining.length; i++) {
+        const d = dist(cursor, remaining[i].point)
+        if (d < bestDist) { bestDist = d; bestIndex = i }
+      }
+      const next = remaining.splice(bestIndex, 1)[0]
+      const leg = orthogonalPath(cursor, next.point, isInside)
+      horizontal += pathLength(leg)
+      points.push(...leg.slice(1))
+      cursor = next.point
+    }
+
+    // remontées et descentes verticales jusqu'à chaque appareil
+    const vertical = circuit.devices.reduce((sum, device) => {
+      const spec = ITEM_BY_ID[device.type]
+      if (!spec) return sum
+      return sum + (spec.layer === 'plafond'
+        ? Math.max(0, 250 - spec.height) + 30
+        : spec.height + 30)
+    }, 0)
+
+    routes.push({
+      id: `route-${circuit.id}`,
+      circuitId: circuit.id,
+      points,
+      length: horizontal + vertical,
+      horizontal,
+      vertical,
+      color: circuit.kind === 'lights' ? '#F59E0B'
+        : circuit.kind === 'special' ? '#DC2626'
+          : circuit.kind === 'sockets' ? '#2563EB' : '#16A34A',
+    })
+  }
+
+  return routes
+}
+
+/**
+ * Compare l'installation dessinée aux minimums de la norme, pièce par pièce.
+ */
+export function checkCompliance(rooms, devices) {
+  const results = []
+  for (const room of rooms) {
+    if (room.type === 'garage' || room.type === 'cellier') continue
+    const inRoom = devices.filter(d => pointInPolygon(d.point, room.points))
+    const count = (categories) => inRoom.filter(d => {
+      const spec = ITEM_BY_ID[d.type]
+      return spec && categories.includes(spec.category)
+    }).length
+
+    const need = minimumEquipment(room.type, room.area)
+    const placedSockets = inRoom.filter(d => ['prise', 'prise-plan'].includes(d.type)).length
+    const placedLights = inRoom.filter(d => ['point-lumineux', 'applique'].includes(d.type)).length
+    const placedNetwork = count(['network'])
+
+    const issues = []
+    if (placedSockets < need.sockets) {
+      issues.push(`${need.sockets - placedSockets} prise${need.sockets - placedSockets > 1 ? 's' : ''} manquante${need.sockets - placedSockets > 1 ? 's' : ''}`)
+    }
+    if (placedLights < need.lights) {
+      issues.push(`${need.lights - placedLights} point${need.lights - placedLights > 1 ? 's' : ''} lumineux manquant${need.lights - placedLights > 1 ? 's' : ''}`)
+    }
+    if (need.network && placedNetwork < need.network) {
+      issues.push('prise RJ45 manquante')
+    }
+    if (room.type === 'cuisine' && room.area >= 4) {
+      const plan = inRoom.filter(d => d.type === 'prise-plan').length
+      if (plan < 4) issues.push(`${4 - plan} prise(s) de plan de travail manquante(s)`)
+    }
+
+    results.push({
+      room,
+      need,
+      placedSockets,
+      placedLights,
+      placedNetwork,
+      issues,
+      compliant: issues.length === 0,
+    })
+  }
+  return results
+}
+
+/**
+ * Analyse complète d'une installation dessinée : circuits, gaines, protections,
+ * quantitatif et conformité.
+ */
+export function computeElectrical(plan, surfaces) {
+  const devices = (plan.electrical || []).filter(d => ITEM_BY_ID[d.type])
+  const rooms = surfaces.rooms || []
+  const panelDevice = devices.find(d => d.type === 'tableau')
+  const panel = panelDevice?.point || autoPanel(rooms)
+
+  const powered = devices.filter(d => d.type !== 'tableau')
+  const circuits = assignCircuits(powered, rooms)
+  const routes = routeElectrical(circuits, panel, rooms)
+  const compliance = checkCompliance(rooms, powered)
+
+  const conduitLength = routes.reduce((s, r) => s + r.length, 0) / 100
+  const byCircuitKind = {}
+  for (const circuit of circuits) {
+    const route = routes.find(r => r.circuitId === circuit.id)
+    const key = circuit.section || 'courant-faible'
+    byCircuitKind[key] = (byCircuitKind[key] || 0) + (route?.length || 0) / 100
+  }
+
+  const powerCircuits = circuits.filter(c => c.breaker > 0)
+  const differentials = sizeDifferentials(
+    rooms.reduce((s, r) => s + r.area, 0),
+    powerCircuits.length,
+  )
+  const needsTypeA = circuits.some(c => c.differentialType === 'A')
+
+  return {
+    devices,
+    powered,
+    panel,
+    panelPlaced: !!panelDevice,
+    circuits,
+    routes,
+    compliance,
+    differentials,
+    needsTypeA,
+    totals: {
+      conduitLength,
+      cableLength: conduitLength * 3, // trois conducteurs par circuit
+      boxes: powered.length,
+      breakers: powerCircuits.length,
+      bySection: byCircuitKind,
+      devices: powered.length,
+    },
+    warnings: buildInstallWarnings(circuits, compliance, !!panelDevice),
+  }
+}
+
+function autoPanel(rooms) {
+  const entry = rooms.find(r => r.type === 'entree') || rooms.find(r => r.type === 'couloir') || rooms[0]
+  return entry ? { x: Math.round(entry.centroid.x), y: Math.round(entry.centroid.y) } : { x: 0, y: 0 }
+}
+
+function buildInstallWarnings(circuits, compliance, panelPlaced) {
+  const warnings = []
+
+  if (!panelPlaced) {
+    warnings.push({
+      level: 'warning',
+      text: "Le tableau électrique n'est pas placé. Il est positionné automatiquement dans l'entrée pour le calcul : posez-le à son emplacement réel pour obtenir les bonnes longueurs de gaine.",
+    })
+  }
+
+  const specials = circuits.filter(c => c.kind === 'special').length
+  if (specials < 3) {
+    warnings.push({
+      level: 'error',
+      text: `Seulement ${specials} circuit${specials > 1 ? 's' : ''} spécialisé${specials > 1 ? 's' : ''} sur les 3 exigés par la NF C 15-100. Ajoutez au minimum le four, le lave-vaisselle et le lave-linge.`,
+    })
+  }
+
+  const nonCompliant = compliance.filter(c => !c.compliant)
+  for (const item of nonCompliant) {
+    warnings.push({
+      level: 'warning',
+      text: `${item.room.name} : ${item.issues.join(', ')}.`,
+    })
+  }
+
+  const overloaded = circuits.filter(c =>
+    (c.kind === 'sockets' && c.devices.length > CIRCUIT_LIMITS.sockets.perCircuit) ||
+    (c.kind === 'lights' && c.devices.length > CIRCUIT_LIMITS.lights.perCircuit))
+  for (const circuit of overloaded) {
+    warnings.push({ level: 'error', text: `${circuit.label} dépasse le nombre de points autorisés.` })
+  }
+
+  warnings.push({
+    level: 'info',
+    text: "Toute installation neuve doit être contrôlée par le CONSUEL avant sa mise en service par Enedis, y compris en auto-construction.",
+  })
+
+  return warnings
+}
