@@ -19,6 +19,7 @@ import {
 } from './geometry'
 import { PRICE_BY_ID, STRUCTURE_BY_ID, ROOM_TYPE_BY_ID, priceOf } from '../data/prices'
 import { planElectricalNeeds } from './electrical'
+import { computePlumbing } from './plumbing'
 
 /* ---------------------------------------------------------------- le plan */
 
@@ -317,15 +318,32 @@ export function computeQuantities(plan) {
   const kitchenCount = s.rooms.filter(r => r.type === 'cuisine').length
   const laundryCount = s.rooms.filter(r => r.type === 'buanderie').length
 
-  const waterPoints = sdbCount * 2 + wcCount + kitchenCount + laundryCount
-  add('point-eau', waterPoints, STAGE.SECOND,
-    `${sdbCount} salle(s) de bain, ${wcCount} WC, ${kitchenCount} cuisine(s)`)
-  add('evacuation', wetRooms.length * 6 + 8, STAGE.SECOND,
-    `Collecteur principal et antennes vers ${wetRooms.length} pièce(s) humide(s)`)
-  add('sanitaire-wc', wcCount, STAGE.FINITION, null)
-  add('sanitaire-douche', sdbCount, STAGE.FINITION, null)
-  add('sanitaire-lavabo', sdbCount, STAGE.FINITION, null)
-  add('sanitaire-evier', kitchenCount, STAGE.FINITION, null)
+  // Dès que des appareils sont posés sur le plan, on remplace l'estimation
+  // forfaitaire par les longueurs réellement calculées sur le réseau.
+  const placed = plan.equipment || []
+  const plumbing = placed.length ? computePlumbing(plan, s) : null
+
+  if (plumbing) {
+    const countOf = (type) => placed.filter(e => e.type === type).length
+    add('point-eau', plumbing.totals.waterPoints, STAGE.SECOND,
+      `Relevé sur les ${placed.length} appareils placés sur le plan`)
+    add('evacuation', plumbing.totals.drainTotal * 1.15, STAGE.SECOND,
+      `Réseau tracé : ${plumbing.totals.drainTotal.toFixed(1)} ml, majorés de 15 % pour les chutes et reprises`)
+    add('sanitaire-wc', countOf('wc'), STAGE.FINITION, null)
+    add('sanitaire-douche', countOf('douche') + countOf('baignoire'), STAGE.FINITION, null)
+    add('sanitaire-lavabo', countOf('lavabo'), STAGE.FINITION, null)
+    add('sanitaire-evier', countOf('evier'), STAGE.FINITION, null)
+  } else {
+    const waterPoints = sdbCount * 2 + wcCount + kitchenCount + laundryCount
+    add('point-eau', waterPoints, STAGE.SECOND,
+      `${sdbCount} salle(s) de bain, ${wcCount} WC, ${kitchenCount} cuisine(s)`)
+    add('evacuation', wetRooms.length * 6 + 8, STAGE.SECOND,
+      `Estimation forfaitaire — placez les appareils dans l'onglet Plomberie pour un métré exact`)
+    add('sanitaire-wc', wcCount, STAGE.FINITION, null)
+    add('sanitaire-douche', sdbCount, STAGE.FINITION, null)
+    add('sanitaire-lavabo', sdbCount, STAGE.FINITION, null)
+    add('sanitaire-evier', kitchenCount, STAGE.FINITION, null)
+  }
 
   if (opts.hotWater === 'thermodynamique') add('chauffe-eau', 1, STAGE.SECOND, 'Ballon 200 L')
   if (opts.vmc) add('vmc', 1, STAGE.SECOND, 'Réseau double flux avec bouches dans chaque pièce')

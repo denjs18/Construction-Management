@@ -2,7 +2,7 @@ import { useState, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   MousePointer2, PenLine, DoorOpen, Home, Undo2, Trash2, Maximize2,
-  Check, X, Calculator, Ruler, Settings2, Box,
+  Check, X, Calculator, Settings2, Box, Droplets, Zap,
 } from 'lucide-react'
 import Header from '../layout/Header'
 import PlanCanvas from '../plan/PlanCanvas'
@@ -346,6 +346,20 @@ export default function PlanEditor() {
             >
               <Calculator size={18} />
               Chiffrage
+            </button>
+            <button
+              onClick={() => navigate('/plan/plomberie')}
+              className="flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-700 font-semibold py-3 rounded-xl active:bg-gray-50"
+            >
+              <Droplets size={18} className="text-blue-500" />
+              Plomberie
+            </button>
+            <button
+              onClick={() => navigate('/plan/electricite')}
+              className="flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-700 font-semibold py-3 rounded-xl active:bg-gray-50"
+            >
+              <Zap size={18} className="text-amber-500" />
+              Électricité
             </button>
           </div>
 
