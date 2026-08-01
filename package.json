@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "build:gh": "VITE_BASE=/Construction-Management/ vite build",
+    "deploy:gh": "bash scripts/deploy-gh-pages.sh",
     "preview": "vite preview"
   },
   "dependencies": {
