@@ -6,5 +6,6 @@
     "deploymentEnabled": {
       "gh-pages": false
     }
-  }
+  },
+  "$comment": "Le garde sur gh-pages reste utile tant que cette branche existe : elle ne contient que du statique et tout build y échouerait. Retirable une fois la branche supprimée."
 }
