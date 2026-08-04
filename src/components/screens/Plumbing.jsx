@@ -117,6 +117,13 @@ export default function Plumbing() {
     setSelected(null)
   }
 
+  /** Oublie le placement manuel et laisse l'app repositionner la sortie */
+  const resetExit = () => {
+    const next = { ...(plan.plumbing || {}) }
+    delete next.exit
+    updatePlan({ plumbing: next })
+  }
+
   const canvasEquipment = network.equipment.map(e => ({
     id: e.id, point: e.point, icon: e.spec.icon,
   }))
@@ -288,6 +295,68 @@ export default function Plumbing() {
           </div>
         )}
 
+        {/* La sortie vers le réseau */}
+        {network.equipment.length > 0 && (
+          <div className="card space-y-3">
+            <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+              <ArrowRightCircle size={17} className="text-amber-600" />
+              La sortie vers le réseau
+            </h3>
+
+            <p className="text-sm text-gray-600 leading-relaxed">
+              C'est le point unique par lequel toutes les eaux usées quittent la maison pour
+              rejoindre le tout-à-l'égout ou votre fosse. Tout le réseau descend vers elle :
+              c'est le point le plus bas de l'installation.
+            </p>
+            <p className="text-xs text-gray-500 leading-relaxed">
+              Elle ne peut pas être supprimée — un réseau d'évacuation doit forcément sortir
+              quelque part — mais vous la déplacez librement en la faisant glisser sur le plan.
+              Posez-la sur le mur par lequel votre branchement arrive réellement : c'est elle
+              qui fixe la longueur du collecteur, donc sa profondeur.
+            </p>
+
+            <div className="bg-amber-50 rounded-xl p-3 space-y-1">
+              <Row
+                label="Position"
+                value={`X ${((network.exit.x - network.origin.x) / 100).toFixed(2).replace('.', ',')} m · Y ${((network.exit.y - network.origin.y) / 100).toFixed(2).replace('.', ',')} m`}
+              />
+              <Row label="Traversée de fondation" value={`Ø${network.reservations.find(r => r.isExit)?.diameter || 150} mm`} />
+              <Row label="Profondeur au passage" value={`${Math.round(network.depthAtExit)} cm sous le sol fini`} />
+              <Row
+                label="Placement"
+                value={network.exit?.auto ? 'Automatique' : 'Choisi par vous'}
+              />
+            </div>
+
+            {network.exit?.auto && (
+              <p className="text-[11px] text-amber-700 bg-amber-50 rounded-xl p-2.5 leading-relaxed">
+                Pour l'instant elle est posée automatiquement au plus court depuis vos appareils.
+                Placez-la vous-même dès que vous savez de quel côté arrive votre branchement.
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setMode('exit')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold ${
+                  mode === 'exit' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'
+                }`}
+              >
+                <ArrowRightCircle size={16} />
+                {mode === 'exit' ? 'Touchez le plan…' : 'Placer sur le plan'}
+              </button>
+              {!network.exit?.auto && (
+                <button
+                  onClick={resetExit}
+                  className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-gray-100 text-gray-600"
+                >
+                  Auto
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Pente et profondeur */}
         <div className="card space-y-3">
           <h3 className="font-semibold text-gray-900 flex items-center gap-2">
@@ -321,21 +390,6 @@ export default function Plumbing() {
             <Row label="Raccords et coudes estimés" value={network.totals.fittings} />
           </div>
 
-          <button
-            onClick={() => setMode('exit')}
-            className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold ${
-              mode === 'exit' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'
-            }`}
-          >
-            <ArrowRightCircle size={16} />
-            {plan.plumbing?.exit ? 'Déplacer la sortie vers l\'égout' : 'Placer la sortie vers l\'égout'}
-          </button>
-          {network.exit?.auto && (
-            <p className="text-[11px] text-amber-600 leading-relaxed">
-              La sortie est actuellement placée automatiquement au point le plus court. Positionnez-la
-              vous-même du côté de votre branchement réel pour fiabiliser les profondeurs.
-            </p>
-          )}
         </div>
 
         {/* Quantitatif */}

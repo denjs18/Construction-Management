@@ -336,21 +336,51 @@ const PlanCanvas = forwardRef(function PlanCanvas({
           )
         })}
 
-        {/* Réservations dans la dalle */}
-        {reservations.map(r => (
-          <g key={r.id}>
-            <circle
-              cx={r.point.x} cy={r.point.y} r={Math.max(r.diameter / 2, 6)}
-              fill="#FEE2E2" stroke="#DC2626" strokeWidth={px(1.5)}
-            />
-            <text
-              x={r.point.x} y={r.point.y - Math.max(r.diameter / 2, 6) - px(4)}
-              textAnchor="middle" fontSize={px(10)} fill="#DC2626" fontWeight="600"
-            >
-              Ø{r.diameter}
-            </text>
-          </g>
-        ))}
+        {/* Réservations dans la dalle.
+            Les diamètres sont en millimètres, le plan en centimètres : on
+            divise donc par 10, avec un minimum lisible au doigt. */}
+        {reservations.map(r => {
+          const radius = Math.max(r.diameter / 20, px(7))
+          if (r.isExit) {
+            const side = Math.max(radius * 1.8, px(14))
+            return (
+              <g key={r.id}>
+                <rect
+                  x={r.point.x - side} y={r.point.y - side}
+                  width={side * 2} height={side * 2} rx={px(4)}
+                  fill="#FEF3C7" stroke="#B45309" strokeWidth={px(2)}
+                />
+                <text
+                  x={r.point.x} y={r.point.y}
+                  textAnchor="middle" dominantBaseline="central"
+                  fontSize={px(13)} fill="#B45309" fontWeight="700"
+                >
+                  ➜
+                </text>
+                <text
+                  x={r.point.x} y={r.point.y - side - px(5)}
+                  textAnchor="middle" fontSize={px(10)} fill="#B45309" fontWeight="700"
+                >
+                  Sortie Ø{r.pipe}
+                </text>
+              </g>
+            )
+          }
+          return (
+            <g key={r.id}>
+              <circle
+                cx={r.point.x} cy={r.point.y} r={radius}
+                fill="#FEE2E2" stroke="#DC2626" strokeWidth={px(1.5)}
+              />
+              <text
+                x={r.point.x} y={r.point.y - radius - px(5)}
+                textAnchor="middle" fontSize={px(10)} fill="#DC2626" fontWeight="600"
+              >
+                Ø{r.diameter}
+              </text>
+            </g>
+          )
+        })}
 
         {/* Cheminements de gaines et canalisations */}
         {routes.map(route => (

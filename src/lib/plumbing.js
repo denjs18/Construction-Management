@@ -320,8 +320,24 @@ export function computePlumbing(plan, surfaces) {
     supply,
     totals,
     origin,
-    warnings: buildWarnings(equipment, routes, slope, depthAtExit, rooms),
+    exitDistance: distanceOutsideBuilding(exit, surfaces),
+    warnings: buildWarnings(equipment, routes, slope, depthAtExit, rooms, exit, surfaces),
   }
+}
+
+/**
+ * Distance entre la sortie et le mur extérieur le plus proche, en cm.
+ * Vaut 0 si la sortie est posée sur le bâtiment.
+ */
+function distanceOutsideBuilding(exit, surfaces) {
+  const walls = surfaces?.exteriorWalls || []
+  if (!walls.length || !exit) return 0
+  let best = Infinity
+  for (const wall of walls) {
+    const p = projectOnSegment(exit, wall.a, wall.b)
+    if (p.distance < best) best = p.distance
+  }
+  return Number.isFinite(best) ? Math.round(best) : 0
 }
 
 function emptyTotals() {
@@ -354,8 +370,16 @@ function nearestSupplyPoint(equipment, exit) {
   return { x: Math.round(exit.x), y: Math.round(exit.y) }
 }
 
-function buildWarnings(equipment, routes, slope, depthAtExit, rooms) {
+function buildWarnings(equipment, routes, slope, depthAtExit, rooms, exit, surfaces) {
   const warnings = []
+
+  const outside = distanceOutsideBuilding(exit, surfaces)
+  if (outside > 150) {
+    warnings.push({
+      level: 'warning',
+      text: `La sortie est à ${(outside / 100).toFixed(1).replace('.', ',')} m du bâtiment. Elle représente le point de traversée du mur de fondation : placez-la sur le mur par lequel le collecteur sort réellement, sinon les longueurs et la profondeur calculées seront fausses.`,
+    })
+  }
 
   if (slope < SLOPE_LIMITS.min || slope > SLOPE_LIMITS.max) {
     warnings.push({
