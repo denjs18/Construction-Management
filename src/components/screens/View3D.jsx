@@ -21,7 +21,10 @@ export default function View3D() {
 
   const [showRoof, setShowRoof] = useState(true)
   const [exploded, setExploded] = useState(false)
+  const [showStructure, setShowStructure] = useState(true)
+  const [interacting, setInteracting] = useState(false)
   const [size, setSize] = useState({ w: 360, h: 420 })
+  const [stats, setStats] = useState({ faces: 0, drawn: 0, ms: 0 })
 
   const surfaces = useMemo(() => computeSurfaces(plan), [plan])
   const exteriorWallIds = useMemo(
@@ -30,8 +33,8 @@ export default function View3D() {
   )
 
   const scene = useMemo(
-    () => buildScene(plan, { showRoof, exploded, exteriorWallIds }),
-    [plan, showRoof, exploded, exteriorWallIds],
+    () => buildScene(plan, { showRoof, exploded, exteriorWallIds, structure: showStructure }),
+    [plan, showRoof, exploded, exteriorWallIds, showStructure],
   )
 
   const [camera, setCamera] = useState(() => defaultCamera(scene.bbox))
@@ -72,14 +75,24 @@ export default function View3D() {
     canvas.style.height = `${size.h}px`
     const ctx = canvas.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    const polygons = projectScene(scene.faces, camera, size.w, size.h)
+    const started = performance.now()
+    const polygons = projectScene(scene.faces, camera, size.w, size.h, {
+      maxLod: interacting ? 0 : 1,
+    })
     drawScene(ctx, polygons, size.w, size.h)
-  }, [scene, camera, size])
+    const elapsed = performance.now() - started
+    setStats(previous => (
+      Math.abs(previous.ms - elapsed) < 0.6 && previous.drawn === polygons.length
+        ? previous
+        : { faces: scene.faces.length, drawn: polygons.length, ms: elapsed }
+    ))
+  }, [scene, camera, size, interacting])
 
   /* ------------------------------------------------------------ gestes */
   const onPointerDown = (e) => {
     e.currentTarget.setPointerCapture(e.pointerId)
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    setInteracting(true)
     if (pointers.current.size === 1) {
       gesture.current = { type: 'orbit', x: e.clientX, y: e.clientY, cam: { ...cameraRef.current } }
     } else if (pointers.current.size === 2) {
@@ -121,7 +134,7 @@ export default function View3D() {
 
   const onPointerUp = (e) => {
     pointers.current.delete(e.pointerId)
-    if (pointers.current.size === 0) gesture.current = null
+    if (pointers.current.size === 0) { gesture.current = null; setInteracting(false) }
   }
 
   const onWheel = (e) => {
