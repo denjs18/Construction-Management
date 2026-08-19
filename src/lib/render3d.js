@@ -16,6 +16,7 @@ import {
   dist, direction, normal as normal2d, outerContour, wallsBoundingBox, uniqueNodes,
 } from './geometry'
 import { BUILD_STAGES, STAGE_INDEX } from '../data/buildStages'
+import { ITEM_BY_ID } from './electrical'
 
 export { BUILD_STAGES, STAGE_INDEX }
 
@@ -518,6 +519,96 @@ export function roofFaces(walls, roof, eaveZ) {
   return faces
 }
 
+/* -------------------------------------------------------------- réseaux */
+
+/**
+ * Gaines électriques et évacuations, telles qu'on les voit sur un chantier
+ * avant fermeture : les gaines posées sur la dalle puis remontant dans les
+ * murs, les évacuations enterrées sous le futur dallage.
+ *
+ * Les diamètres réels sont respectés dès qu'ils restent lisibles ; une gaine
+ * ICTA Ø20 mesurée à l'échelle d'une maison serait invisible, elle est donc
+ * tracée à un diamètre plancher.
+ */
+function networkFaces(networks, plan) {
+  const faces = []
+  const height = plan.ceilingHeight || 250
+  const MIN_RADIUS = 3
+
+  const elec = networks?.electrical
+  if (elec) {
+    for (const route of elec.routes) {
+      const circuit = elec.circuits.find(c => c.id === route.circuitId)
+      const overhead = circuit?.kind === 'lights'
+      const level = overhead ? height - 8 : 3
+      const radius = MIN_RADIUS
+
+      for (let i = 0; i < route.points.length - 1; i++) {
+        const a = route.points[i]
+        const b = route.points[i + 1]
+        if (dist(a, b) < 1) continue
+        faces.push(...prism(
+          [a.x, a.y, level], [b.x, b.y, level],
+          radius, radius, [0, 0, 1],
+          MATERIALS.gaine, 'gaine', 'reseaux', 1,
+        ))
+      }
+
+      for (const device of circuit?.devices || []) {
+        const spec = ITEM_BY_ID[device.type]
+        if (!spec) continue
+        const target = spec.layer === 'plafond' ? Math.min(height - 4, spec.height) : spec.height
+        if (Math.abs(target - level) < 4) continue
+        faces.push(...prism(
+          [device.point.x, device.point.y, level],
+          [device.point.x, device.point.y, target],
+          radius, radius, [1, 0, 0],
+          MATERIALS.gaine, 'gaine', 'reseaux', 1,
+        ))
+      }
+    }
+  }
+
+  const plumbing = networks?.plumbing
+  if (plumbing) {
+    for (const route of plumbing.routes) {
+      const item = plumbing.equipment.find(e => e.id === route.equipmentId)
+      const startDepth = item?.spec?.startDepth || 25
+      const endDepth = route.trunk ? plumbing.depthAtExit : startDepth
+      const radius = Math.max(MIN_RADIUS, route.diameter / 20)
+      const total = route.length || 1
+      let travelled = 0
+
+      for (let i = 0; i < route.points.length - 1; i++) {
+        const a = route.points[i]
+        const b = route.points[i + 1]
+        const segment = dist(a, b)
+        if (segment < 1) continue
+        const z1 = -(startDepth + (endDepth - startDepth) * (travelled / total))
+        travelled += segment
+        const z2 = -(startDepth + (endDepth - startDepth) * (travelled / total))
+        faces.push(...prism(
+          [a.x, a.y, z1], [b.x, b.y, z2],
+          radius, radius, [0, 0, 1],
+          MATERIALS.evacuation, 'evacuation', 'reseaux', 1,
+        ))
+      }
+
+      // remontée vers l'appareil sanitaire
+      if (item) {
+        faces.push(...prism(
+          [item.point.x, item.point.y, -startDepth],
+          [item.point.x, item.point.y, 6],
+          radius, radius, [1, 0, 0],
+          MATERIALS.evacuation, 'evacuation', 'reseaux', 1,
+        ))
+      }
+    }
+  }
+
+  return faces
+}
+
 /* --------------------------------------------------------- construction */
 
 /**
@@ -564,8 +655,11 @@ export function buildScene(plan, options = {}) {
     faces.push(...foundationFaces(walls, bearingIds, plan))
   }
 
-  // Dalle
-  if (contour.points.length >= 3) {
+  const showNetworks = !!options.showNetworks && !!options.networks
+
+  // Dalle. En mode réseaux elle est retirée : les évacuations passent dessous
+  // et le tri par profondeur les placerait derrière elle.
+  if (contour.points.length >= 3 && !showNetworks) {
     const slabThickness = plan.slab?.thickness || 15
     faces.push(...box(
       contour.points.map(p => ({ x: p.x, y: p.y })),
@@ -573,12 +667,16 @@ export function buildScene(plan, options = {}) {
     ))
   }
 
-  // Murs : les cloisons arrivent en fin de chantier
+  // Murs : les cloisons arrivent en fin de chantier, et restent absentes en
+  // mode réseaux puisque les gaines les traversent avant leur fermeture.
   for (const wall of walls) {
     const exterior = exteriorIds.has(wall.id)
-    const stage = exterior || wall.kind === 'porteur' ? 'elevation' : 'cloisons'
-    faces.push(...wallFaces(wall, openings, height, exterior, stage))
+    const partition = !exterior && wall.kind !== 'porteur'
+    if (partition && showNetworks) continue
+    faces.push(...wallFaces(wall, openings, height, exterior, partition ? 'cloisons' : 'elevation'))
   }
+
+  if (showNetworks) faces.push(...networkFaces(options.networks, plan))
 
   // Poteaux, chaînage et linteaux
   if (showStructure) {
@@ -595,7 +693,7 @@ export function buildScene(plan, options = {}) {
   const duringFraming = stageActive
     && stageLimit >= STAGE_INDEX.charpente
     && stageLimit < STAGE_INDEX.couverture
-  if (showStructure && (roofHidden || options.exploded || duringFraming)) {
+  if (showStructure && !showNetworks && (roofHidden || options.exploded || duringFraming)) {
     faces.push(...trussFaces(walls, plan.roof, height))
   }
 

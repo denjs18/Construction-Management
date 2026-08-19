@@ -2,11 +2,13 @@ import { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   RotateCcw, Home, Layers, Calculator, Ruler, Eye, EyeOff, Info,
-  HardHat, ChevronLeft, ChevronRight, BookOpen, Clock, AlertTriangle,
+  HardHat, ChevronLeft, ChevronRight, BookOpen, Clock, AlertTriangle, Cable,
 } from 'lucide-react'
 import Header from '../layout/Header'
 import { useApp } from '../../contexts/AppContext'
 import { computeSurfaces, computeEstimate, hoursToDays } from '../../lib/metre'
+import { computeElectrical } from '../../lib/electrical'
+import { computePlumbing } from '../../lib/plumbing'
 import { buildScene, projectScene, drawScene, defaultCamera, ridgeHeight } from '../../lib/render3d'
 import { ROOF_TYPES, formatEuro } from '../../data/prices'
 import { BUILD_STAGES, stageTotals } from '../../data/buildStages'
@@ -30,6 +32,7 @@ export default function View3D() {
   const [size, setSize] = useState({ w: 360, h: 420 })
   const [stats, setStats] = useState({ faces: 0, drawn: 0, ms: 0 })
   const [stageIndex, setStageIndex] = useState(null) // null = maison terminée
+  const [showNetworks, setShowNetworks] = useState(false)
 
   const surfaces = useMemo(() => computeSurfaces(plan), [plan])
   const exteriorWallIds = useMemo(
@@ -40,11 +43,24 @@ export default function View3D() {
   const estimate = useMemo(() => computeEstimate(plan), [plan])
   const stage = stageIndex === null ? null : BUILD_STAGES[stageIndex]
 
+  const networks = useMemo(() => ({
+    electrical: computeElectrical(plan, surfaces),
+    plumbing: computePlumbing(plan, surfaces),
+  }), [plan, surfaces])
+
+  const hasNetworks = networks.electrical.routes.length > 0 || networks.plumbing.routes.length > 0
+
   const scene = useMemo(
     () => buildScene(plan, {
-      showRoof, exploded, exteriorWallIds, structure: showStructure, stage: stage?.id,
+      showRoof: showNetworks ? false : showRoof,
+      exploded,
+      exteriorWallIds,
+      structure: showStructure,
+      stage: stage?.id,
+      networks,
+      showNetworks,
     }),
-    [plan, showRoof, exploded, exteriorWallIds, showStructure, stage],
+    [plan, showRoof, exploded, exteriorWallIds, showStructure, stage, networks, showNetworks],
   )
 
   const [camera, setCamera] = useState(() => defaultCamera(scene.bbox))
@@ -198,6 +214,20 @@ export default function View3D() {
           <IconButton onClick={() => setExploded(e => !e)} label="Éclaté" active={exploded}>
             <Layers size={16} />
           </IconButton>
+          {hasNetworks && (
+            <IconButton
+              onClick={() => {
+                setShowNetworks(next => {
+                  if (!next) setCamera(c => ({ ...c, elevation: Math.max(c.elevation, 1.05) }))
+                  return !next
+                })
+              }}
+              label="Réseaux"
+              active={showNetworks}
+            >
+              <Cable size={16} />
+            </IconButton>
+          )}
         </div>
 
         {stage ? (
@@ -217,6 +247,36 @@ export default function View3D() {
           </div>
         )}
       </div>
+
+      {showNetworks && (
+        <div className="px-4 pt-4">
+          <div className="card space-y-2">
+            <h3 className="font-semibold text-gray-900 flex items-center gap-2 text-sm">
+              <Cable size={16} className="text-amber-500" />
+              Réseaux avant fermeture
+            </h3>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              La dalle et les cloisons sont retirées pour laisser voir ce qu'elles recouvriront.
+              C'est exactement l'état du chantier au moment où il faut tout vérifier : une fois
+              la chape coulée et les plaques posées, plus rien n'est accessible.
+            </p>
+            <div className="flex gap-4 pt-1">
+              <span className="flex items-center gap-1.5 text-xs text-gray-600">
+                <span className="w-3 h-3 rounded-full" style={{ background: '#E0A422' }} />
+                Gaines électriques
+              </span>
+              <span className="flex items-center gap-1.5 text-xs text-gray-600">
+                <span className="w-3 h-3 rounded-full" style={{ background: '#3F7FA6' }} />
+                Évacuations
+              </span>
+            </div>
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              Les diamètres d'évacuation sont à l'échelle. Les gaines ICTA sont grossies :
+              un Ø20 réel serait invisible à l'échelle d'une maison.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Curseur de chantier */}
       <ConstructionTimeline
