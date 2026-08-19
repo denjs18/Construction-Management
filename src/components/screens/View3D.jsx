@@ -1,11 +1,15 @@
 import { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RotateCcw, Home, Layers, Calculator, Ruler, Eye, EyeOff, Info } from 'lucide-react'
+import {
+  RotateCcw, Home, Layers, Calculator, Ruler, Eye, EyeOff, Info,
+  HardHat, ChevronLeft, ChevronRight, BookOpen, Clock, AlertTriangle,
+} from 'lucide-react'
 import Header from '../layout/Header'
 import { useApp } from '../../contexts/AppContext'
-import { computeSurfaces } from '../../lib/metre'
+import { computeSurfaces, computeEstimate, hoursToDays } from '../../lib/metre'
 import { buildScene, projectScene, drawScene, defaultCamera, ridgeHeight } from '../../lib/render3d'
-import { ROOF_TYPES } from '../../data/prices'
+import { ROOF_TYPES, formatEuro } from '../../data/prices'
+import { BUILD_STAGES, stageTotals } from '../../data/buildStages'
 
 const MIN_ELEVATION = -0.12
 const MAX_ELEVATION = 1.45
@@ -25,6 +29,7 @@ export default function View3D() {
   const [interacting, setInteracting] = useState(false)
   const [size, setSize] = useState({ w: 360, h: 420 })
   const [stats, setStats] = useState({ faces: 0, drawn: 0, ms: 0 })
+  const [stageIndex, setStageIndex] = useState(null) // null = maison terminée
 
   const surfaces = useMemo(() => computeSurfaces(plan), [plan])
   const exteriorWallIds = useMemo(
@@ -32,9 +37,14 @@ export default function View3D() {
     [surfaces],
   )
 
+  const estimate = useMemo(() => computeEstimate(plan), [plan])
+  const stage = stageIndex === null ? null : BUILD_STAGES[stageIndex]
+
   const scene = useMemo(
-    () => buildScene(plan, { showRoof, exploded, exteriorWallIds, structure: showStructure }),
-    [plan, showRoof, exploded, exteriorWallIds, showStructure],
+    () => buildScene(plan, {
+      showRoof, exploded, exteriorWallIds, structure: showStructure, stage: stage?.id,
+    }),
+    [plan, showRoof, exploded, exteriorWallIds, showStructure, stage],
   )
 
   const [camera, setCamera] = useState(() => defaultCamera(scene.bbox))
@@ -162,7 +172,8 @@ export default function View3D() {
 
   const faitage = ridgeHeight(plan)
   const roofLabel = ROOF_TYPES.find(r => r.id === plan.roof?.kind)?.label || '2 pans'
-  const irregular = (scene.contour?.points?.length || 4) > 4
+  const boxArea = scene.bbox ? (scene.bbox.width * scene.bbox.height) / 10000 : 0
+  const irregular = boxArea > 0 && (scene.contour?.area || 0) < boxArea * 0.97
 
   return (
     <div className="pb-24 bg-slate-50 min-h-screen">
@@ -189,12 +200,30 @@ export default function View3D() {
           </IconButton>
         </div>
 
-        <div className="absolute bottom-2 left-2 bg-white/90 rounded-xl px-3 py-1.5">
-          <p className="text-[11px] text-gray-600">
-            Un doigt pour tourner · deux doigts pour zoomer
-          </p>
-        </div>
+        {stage ? (
+          <div className="absolute top-2 left-2 bg-white/95 rounded-xl px-3 py-2 shadow-sm max-w-[62%]">
+            <p className="text-[10px] font-semibold text-blue-600 uppercase tracking-wide">
+              Étape {stageIndex + 1} sur {BUILD_STAGES.length}
+            </p>
+            <p className="text-sm font-bold text-gray-900 leading-tight">
+              {stage.icon} {stage.label}
+            </p>
+          </div>
+        ) : (
+          <div className="absolute bottom-2 left-2 bg-white/90 rounded-xl px-3 py-1.5">
+            <p className="text-[11px] text-gray-600">
+              Un doigt pour tourner · deux doigts pour zoomer
+            </p>
+          </div>
+        )}
       </div>
+
+      {/* Curseur de chantier */}
+      <ConstructionTimeline
+        stageIndex={stageIndex}
+        onChange={setStageIndex}
+        estimate={estimate}
+      />
 
       <div className="p-4 space-y-3">
         <div className="grid grid-cols-3 gap-2">
@@ -221,6 +250,16 @@ export default function View3D() {
             La hauteur au faîtage est presque toujours limitée par le PLU de votre commune,
             souvent entre 7 et 9 m en zone pavillonnaire. Vérifiez-la avant de déposer votre
             permis de construire : c'est le motif de refus le plus fréquent.
+          </p>
+        </div>
+
+        <div className="bg-red-50 border border-red-100 rounded-2xl p-4 flex gap-2">
+          <AlertTriangle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-red-700 leading-relaxed">
+            Les poteaux, chaînages, linteaux et fermes sont représentés avec des sections
+            courantes, à titre indicatif. Ce n'est pas un calcul de structure : le
+            dimensionnement des fondations, des armatures et des portées relève d'un bureau
+            d'études, et lui seul engage sa responsabilité.
           </p>
         </div>
 
@@ -288,3 +327,134 @@ function Row({ label, value }) {
 }
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v))
+
+/* ------------------------------------------------- curseur de chantier */
+
+/**
+ * Rejoue la construction du terrain nu jusqu'aux cloisons.
+ *
+ * Chaque étape affiche ce qu'elle coûte d'après le chiffrage du projet, le
+ * temps de travail si l'utilisateur la réalise lui-même, le point de vigilance
+ * qui compte, et le guide correspondant quand il existe.
+ */
+function ConstructionTimeline({ stageIndex, onChange, estimate }) {
+  const navigate = useNavigate()
+  const active = stageIndex !== null
+  const stage = active ? BUILD_STAGES[stageIndex] : null
+  const totals = useMemo(
+    () => (stage ? stageTotals(estimate, stage.id) : null),
+    [estimate, stage],
+  )
+
+  return (
+    <div className="px-4 pt-4">
+      <div className="card space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+            <HardHat size={17} className="text-blue-600" />
+            Suivre le chantier
+          </h3>
+          <button
+            onClick={() => onChange(active ? null : 0)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${
+              active ? 'bg-gray-100 text-gray-700' : 'bg-blue-600 text-white'
+            }`}
+          >
+            {active ? 'Voir terminé' : 'Rejouer'}
+          </button>
+        </div>
+
+        {!active && (
+          <p className="text-xs text-gray-500 leading-relaxed">
+            Faites défiler les étapes pour voir votre maison se construire, du terrain nu
+            aux cloisons, avec le coût et le temps de chaque phase.
+          </p>
+        )}
+
+        {active && (
+          <>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onChange(Math.max(0, stageIndex - 1))}
+                disabled={stageIndex === 0}
+                className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center disabled:opacity-35 flex-shrink-0"
+                aria-label="Étape précédente"
+              >
+                <ChevronLeft size={18} className="text-gray-700" />
+              </button>
+
+              <input
+                type="range"
+                min={0}
+                max={BUILD_STAGES.length - 1}
+                value={stageIndex}
+                onChange={e => onChange(parseInt(e.target.value, 10))}
+                className="flex-1 accent-blue-600"
+                aria-label="Étape du chantier"
+              />
+
+              <button
+                onClick={() => onChange(Math.min(BUILD_STAGES.length - 1, stageIndex + 1))}
+                disabled={stageIndex === BUILD_STAGES.length - 1}
+                className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center disabled:opacity-35 flex-shrink-0"
+                aria-label="Étape suivante"
+              >
+                <ChevronRight size={18} className="text-gray-700" />
+              </button>
+            </div>
+
+            <div>
+              <p className="font-bold text-gray-900">{stage.icon} {stage.label}</p>
+              <p className="text-sm text-gray-600 leading-relaxed mt-1">{stage.detail}</p>
+            </div>
+
+            {totals.lines.length > 0 && (
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-blue-50 rounded-xl p-3">
+                  <p className="text-[11px] text-blue-600">Coût de l'étape</p>
+                  <p className="font-bold text-blue-800">{formatEuro(totals.total)}</p>
+                </div>
+                <div className="bg-green-50 rounded-xl p-3">
+                  <p className="text-[11px] text-green-600 flex items-center gap-1">
+                    <Clock size={11} /> Si vous le faites
+                  </p>
+                  <p className="font-bold text-green-800">
+                    {totals.hours > 0 ? `${hoursToDays(totals.hours)} jours` : 'Pro requis'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {totals.lines.length > 0 && (
+              <div className="space-y-1">
+                {totals.lines.map(line => (
+                  <div key={line.itemId} className="flex justify-between text-xs py-1 border-b border-gray-50 last:border-0">
+                    <span className="text-gray-600 truncate pr-2">{line.label}</span>
+                    <span className="text-gray-900 font-medium flex-shrink-0">
+                      {line.qty.toLocaleString('fr-FR')} {line.unit}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 flex gap-2">
+              <AlertTriangle size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-800 leading-relaxed">{stage.watch}</p>
+            </div>
+
+            {stage.guide && (
+              <button
+                onClick={() => navigate(`/guides/${stage.guide}`)}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-gray-100 text-gray-700 text-sm font-semibold"
+              >
+                <BookOpen size={15} />
+                Lire le guide de cette étape
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}

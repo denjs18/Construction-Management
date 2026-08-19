@@ -15,6 +15,9 @@
 import {
   dist, direction, normal as normal2d, outerContour, wallsBoundingBox, uniqueNodes,
 } from './geometry'
+import { BUILD_STAGES, STAGE_INDEX } from '../data/buildStages'
+
+export { BUILD_STAGES, STAGE_INDEX }
 
 /* ------------------------------------------------------------ matériaux */
 
@@ -38,28 +41,6 @@ export const MATERIALS = {
   gaine: '#E0A422',
   evacuation: '#3F7FA6',
 }
-
-/* ------------------------------------------------------- phases de chantier */
-
-/**
- * Ordre de construction. Chaque facette porte la phase à laquelle elle
- * apparaît, ce qui permet de rejouer le chantier du terrain nu à la finition.
- */
-export const BUILD_STAGES = [
-  { id: 'terrain', label: 'Terrain nu', detail: "Le terrain décapé, avant tout ouvrage." },
-  { id: 'fouilles', label: 'Fouilles et semelles', detail: "Les rigoles sont creusées hors gel et les semelles filantes coulées." },
-  { id: 'soubassement', label: 'Soubassement', detail: "Les murs de fondation montent de la semelle jusqu'au niveau de la dalle." },
-  { id: 'dalle', label: 'Dallage', detail: "Hérisson, isolant et dalle armée : le plancher bas est coulé." },
-  { id: 'elevation', label: 'Élévation des murs', detail: "Les murs porteurs montent, raidis par les poteaux d'angle." },
-  { id: 'chainage', label: 'Chaînage et linteaux', detail: "La ceinture béton et les linteaux reprennent les charges en tête de mur." },
-  { id: 'charpente', label: 'Charpente', detail: "Les fermes sont posées et entretoisées." },
-  { id: 'couverture', label: 'Couverture', detail: "Écran, liteaux et tuiles mettent le chantier hors d'eau." },
-  { id: 'menuiseries', label: 'Menuiseries', detail: "Portes et fenêtres posées : le chantier est hors d'air." },
-  { id: 'reseaux', label: 'Réseaux', detail: "Gaines électriques et évacuations avant fermeture des murs." },
-  { id: 'cloisons', label: 'Cloisons', detail: "Les cloisons de distribution découpent les pièces." },
-]
-
-export const STAGE_INDEX = Object.fromEntries(BUILD_STAGES.map((s, i) => [s.id, i]))
 
 /* --------------------------------------------------- primitives de facettes */
 
@@ -610,7 +591,11 @@ export function buildScene(plan, options = {}) {
   // c'est-à-dire exactement quand on cherche à la voir.
   const lift = options.exploded ? 150 : 0
   const roofHidden = options.showRoof === false
-  if (showStructure && (roofHidden || options.exploded)) {
+  const stageActive = stageLimit !== null && stageLimit !== undefined
+  const duringFraming = stageActive
+    && stageLimit >= STAGE_INDEX.charpente
+    && stageLimit < STAGE_INDEX.couverture
+  if (showStructure && (roofHidden || options.exploded || duringFraming)) {
     faces.push(...trussFaces(walls, plan.roof, height))
   }
 
