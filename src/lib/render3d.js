@@ -51,8 +51,8 @@ export const MATERIALS = {
  * du sens d'enroulement, et donc de masquer les faces arrière de façon fiable.
  * `lod` vaut 1 pour les éléments fins, écartés pendant les manipulations.
  */
-const face = (points, color, kind, stage, ref = null, lod = 0) =>
-  ({ points, color, kind, stage, ref, lod })
+const face = (points, color, kind, stage, ref = null, lod = 0, outward = null) =>
+  ({ points, color, kind, stage, ref, lod, outward })
 
 /* ------------------------------------------------------- algèbre vectorielle */
 
@@ -70,22 +70,41 @@ function norm(v) {
   return [v[0] / l, v[1] / l, v[2] / l]
 }
 
-/** Boîte définie par un quadrilatère de base au sol et deux altitudes */
-function box(baseQuad, z0, z1, color, kind, stage, lod = 0) {
-  const bottom = baseQuad.map(p => [p.x, p.y, z0])
-  const top = baseQuad.map(p => [p.x, p.y, z1])
-  const centre = [
-    baseQuad.reduce((s, p) => s + p.x, 0) / baseQuad.length,
-    baseQuad.reduce((s, p) => s + p.y, 0) / baseQuad.length,
-    (z0 + z1) / 2,
-  ]
+/**
+ * Volume obtenu en extrudant un polygone de base entre deux altitudes.
+ *
+ * Les normales sortantes sont calculées exactement à partir du sens de parcours
+ * du polygone, et non déduites d'un point supposé intérieur. C'est indispensable
+ * dès que l'emprise n'est pas convexe : sur une maison en L, la moyenne des
+ * sommets tombe dans le creux du L, donc à l'extérieur du volume, et le
+ * masquage des faces arrière s'inversait — la dalle disparaissait.
+ */
+function box(basePolygon, z0, z1, color, kind, stage, lod = 0) {
+  const n = basePolygon.length
+  const bottom = basePolygon.map(p => [p.x, p.y, z0])
+  const top = basePolygon.map(p => [p.x, p.y, z1])
+
+  let shoelace = 0
+  for (let i = 0; i < n; i++) {
+    const p = basePolygon[i]
+    const q = basePolygon[(i + 1) % n]
+    shoelace += p.x * q.y - q.x * p.y
+  }
+  const counterClockwise = shoelace > 0
+
   const faces = [
-    face(top, color, kind, stage, centre, lod),
-    face(bottom, color, kind, stage, centre, lod),
+    face(top, color, kind, stage, null, lod, [0, 0, 1]),
+    face(bottom, color, kind, stage, null, lod, [0, 0, -1]),
   ]
-  for (let i = 0; i < baseQuad.length; i++) {
-    const j = (i + 1) % baseQuad.length
-    faces.push(face([bottom[i], bottom[j], top[j], top[i]], color, kind, stage, centre, lod))
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n
+    const ex = basePolygon[j].x - basePolygon[i].x
+    const ey = basePolygon[j].y - basePolygon[i].y
+    const outward = counterClockwise ? [ey, -ex, 0] : [-ey, ex, 0]
+    faces.push(face(
+      [bottom[i], bottom[j], top[j], top[i]],
+      color, kind, stage, null, lod, outward,
+    ))
   }
   return faces
 }
@@ -372,7 +391,36 @@ function foundationFaces(walls, bearingIds, plan) {
  * On garde six membrures par ferme, assez pour lire la structure sans faire
  * exploser le nombre de facettes.
  */
-function trussFaces(walls, roof, height) {
+/**
+ * Étendue du bâtiment en travers, à une position donnée le long du faîtage.
+ * Renvoie null si la ligne ne traverse pas l'emprise.
+ */
+function crossExtent(points, run, alongX) {
+  if (!points || points.length < 3) return null
+  const hits = []
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]
+    const b = points[(i + 1) % points.length]
+    const a1 = alongX ? a.x : a.y
+    const b1 = alongX ? b.x : b.y
+    if (Math.abs(b1 - a1) < 1e-6) continue
+    if ((a1 - run) * (b1 - run) > 0) continue
+    const t = (run - a1) / (b1 - a1)
+    hits.push(alongX ? a.y + (b.y - a.y) * t : a.x + (b.x - a.x) * t)
+  }
+  if (hits.length < 2) return null
+  return { min: Math.min(...hits), max: Math.max(...hits) }
+}
+
+/**
+ * Fermes industrielles simplifiées : entrait, rampants, poinçon et fiches.
+ *
+ * Chaque ferme est découpée sur l'emprise réelle du bâtiment à sa position :
+ * sur une maison en L, celles qui surplombent le creux sont raccourcies ou
+ * supprimées au lieu de flotter dans le vide. Le faîtage reste horizontal,
+ * comme sur un vrai toit.
+ */
+function trussFaces(walls, roof, height, contourPoints) {
   const bb = wallsBoundingBox(walls)
   if (!Number.isFinite(bb.minX)) return []
   if (roof?.kind === 'plat') return []
@@ -385,10 +433,11 @@ function trussFaces(walls, roof, height) {
   const crossCentre = alongX ? (bb.minY + bb.maxY) / 2 : (bb.minX + bb.maxX) / 2
 
   const pitch = ((roof?.pitch ?? 35) * Math.PI) / 180
-  const rise = (span / 2) * Math.tan(pitch)
+  const slope = Math.tan(pitch)
+  const rise = (span / 2) * slope
   const ridgeZ = height + rise
+  const zRoof = (u) => ridgeZ - Math.abs(u) * slope
 
-  // Une ferme tous les 60 cm, plafonnée pour rester léger sur les grands volumes
   const MAX_TRUSSES = 34
   let count = Math.max(2, Math.round(runLength / 60) + 1)
   if (count > MAX_TRUSSES) count = MAX_TRUSSES
@@ -397,32 +446,51 @@ function trussFaces(walls, roof, height) {
   const sectionW = 4
   const sectionH = 10
   const faces = []
+  let ridgeMin = null
+  let ridgeMax = null
 
   for (let i = 0; i < count; i++) {
     const run = runFrom + step * i
-    // point de la ferme : u est la position transversale, z l'altitude
+    // On sonde légèrement en retrait aux extrémités, sinon la ligne rase le mur
+    const probe = Math.min(Math.max(run, runFrom + 1), runTo - 1)
+    const extent = crossExtent(contourPoints, probe, alongX)
+    if (!extent) continue
+
+    let left = extent.min - crossCentre
+    let right = extent.max - crossCentre
+    if (right - left < 100) continue // moins d'un mètre : rien à porter
+
+    left = Math.max(left, -span / 2)
+    right = Math.min(right, span / 2)
+
     const at = (u, z) => (alongX ? [run, crossCentre + u, z] : [crossCentre + u, run, z])
     const runAxis = alongX ? [1, 0, 0] : [0, 1, 0]
-
-    const left = -span / 2
-    const right = span / 2
     const member = (u1, z1, u2, z2) => prism(
       at(u1, z1), at(u2, z2), sectionW / 2, sectionH / 2, runAxis,
       MATERIALS.bois, 'ferme', 'charpente', 1,
     )
 
-    faces.push(...member(left, height, right, height))        // entrait
-    faces.push(...member(left, height, 0, ridgeZ))            // arbalétrier gauche
-    faces.push(...member(right, height, 0, ridgeZ))           // arbalétrier droit
-    faces.push(...member(0, height, 0, ridgeZ))               // poinçon
-    faces.push(...member(left / 2, height, left / 2, height + rise / 2))   // fiche gauche
-    faces.push(...member(right / 2, height, right / 2, height + rise / 2)) // fiche droite
+    faces.push(...member(left, height, right, height))
+
+    if (left < 0) faces.push(...member(left, zRoof(left), Math.min(right, 0), zRoof(Math.min(right, 0))))
+    if (right > 0) faces.push(...member(Math.max(left, 0), zRoof(Math.max(left, 0)), right, zRoof(right)))
+
+    const spansRidge = left < -1 && right > 1
+    if (spansRidge) {
+      faces.push(...member(0, height, 0, ridgeZ))
+      faces.push(...member(left / 2, height, left / 2, zRoof(left / 2)))
+      faces.push(...member(right / 2, height, right / 2, zRoof(right / 2)))
+      if (ridgeMin === null || run < ridgeMin) ridgeMin = run
+      if (ridgeMax === null || run > ridgeMax) ridgeMax = run
+    }
   }
 
-  // panne faîtière, qui relie visuellement les fermes entre elles
-  const ridgeA = alongX ? [runFrom, crossCentre, ridgeZ] : [crossCentre, runFrom, ridgeZ]
-  const ridgeB = alongX ? [runTo, crossCentre, ridgeZ] : [crossCentre, runTo, ridgeZ]
-  faces.push(...prism(ridgeA, ridgeB, 5, 7, [0, 0, 1], MATERIALS.boisClair, 'panne', 'charpente', 1))
+  // panne faîtière, limitée à la portion réellement surmontée d'un faîtage
+  if (ridgeMin !== null && ridgeMax !== null && ridgeMax - ridgeMin > 10) {
+    const a = alongX ? [ridgeMin, crossCentre, ridgeZ] : [crossCentre, ridgeMin, ridgeZ]
+    const b = alongX ? [ridgeMax, crossCentre, ridgeZ] : [crossCentre, ridgeMax, ridgeZ]
+    faces.push(...prism(a, b, 5, 7, [0, 0, 1], MATERIALS.boisClair, 'panne', 'charpente', 1))
+  }
 
   return faces
 }
@@ -694,7 +762,7 @@ export function buildScene(plan, options = {}) {
     && stageLimit >= STAGE_INDEX.charpente
     && stageLimit < STAGE_INDEX.couverture
   if (showStructure && !showNetworks && (roofHidden || options.exploded || duringFraming)) {
-    faces.push(...trussFaces(walls, plan.roof, height))
+    faces.push(...trussFaces(walls, plan.roof, height, contour.points))
   }
 
   // Couverture
@@ -791,12 +859,22 @@ export function projectScene(faces, cam, width, height, options = {}) {
       centroid[2] += p[2] / f.points.length
     }
 
+    // Orientation extérieure : exacte si la facette la porte, sinon déduite
+    // du point intérieur de son solide. Les surfaces simples n'en ont aucune
+    // et ne sont jamais masquées.
     const n = faceNormal(f.points)
-    // Orientation vers l'extérieur du solide, déduite du point intérieur
-    const outward = f.ref && dot(n, sub(centroid, f.ref)) < 0 ? mul(n, -1) : n
+    let outward = n
+    let closed = false
+    if (f.outward) {
+      outward = norm(f.outward)
+      closed = true
+    } else if (f.ref) {
+      outward = dot(n, sub(centroid, f.ref)) < 0 ? mul(n, -1) : n
+      closed = true
+    }
     const toEye = sub(eye, centroid)
 
-    if (f.ref && dot(outward, toEye) <= 0) { culled += 1; continue }
+    if (closed && dot(outward, toEye) <= 0) { culled += 1; continue }
 
     const view = []
     let behind = false

@@ -284,10 +284,21 @@ const PlanCanvas = forwardRef(function PlanCanvas({
                   fontSize={px(13)}
                   fill="#334155"
                   fontWeight="600"
+                  stroke="#FFFFFF"
+                  strokeWidth={px(3)}
+                  paintOrder="stroke"
                 >
                   {room.typeInfo?.icon} {room.name}
                 </text>
-                <text textAnchor="middle" y={px(12)} fontSize={px(11)} fill="#64748B">
+                <text
+                  textAnchor="middle"
+                  y={px(12)}
+                  fontSize={px(11)}
+                  fill="#64748B"
+                  stroke="#FFFFFF"
+                  strokeWidth={px(3)}
+                  paintOrder="stroke"
+                >
                   {room.area.toFixed(1).replace('.', ',')} m²
                 </text>
               </g>
@@ -399,16 +410,16 @@ const PlanCanvas = forwardRef(function PlanCanvas({
         {/* Équipements de plomberie */}
         {equipment.map(eq => (
           <g key={eq.id} transform={`translate(${eq.point.x} ${eq.point.y})`}>
-            <circle r={px(13)} fill="#DBEAFE" stroke="#2563EB" strokeWidth={px(1.5)} />
-            <text textAnchor="middle" dominantBaseline="central" fontSize={px(14)}>{eq.icon}</text>
+            <circle r={px(11)} fill="#DBEAFE" stroke="#2563EB" strokeWidth={px(1.5)} />
+            <text textAnchor="middle" dominantBaseline="central" fontSize={px(12)}>{eq.icon}</text>
           </g>
         ))}
 
         {/* Appareillage électrique */}
         {electrical.map(item => (
           <g key={item.id} transform={`translate(${item.point.x} ${item.point.y})`}>
-            <circle r={px(11)} fill="#FEF9C3" stroke="#CA8A04" strokeWidth={px(1.5)} />
-            <text textAnchor="middle" dominantBaseline="central" fontSize={px(12)}>{item.icon}</text>
+            <circle r={px(9)} fill="#FEF9C3" stroke="#CA8A04" strokeWidth={px(1.5)} />
+            <text textAnchor="middle" dominantBaseline="central" fontSize={px(10)}>{item.icon}</text>
           </g>
         ))}
 
