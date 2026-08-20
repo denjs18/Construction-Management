@@ -24,12 +24,27 @@ import { coverageArea } from './render3d'
 
 /* ---------------------------------------------------------------- le plan */
 
-export function createEmptyPlan() {
+/** Épaisseur d'un plancher intermédiaire : hourdis, dalle de compression et chape */
+export const FLOOR_THICKNESS = 25
+
+export function createEmptyLevel(index) {
   return {
+    id: index === 0 ? 'rdc' : `n${index}`,
+    name: index === 0 ? 'Rez-de-chaussée' : `Étage ${index}`,
+    ceilingHeight: 250,
     walls: [],
     openings: [],
     roomMeta: [],
-    ceilingHeight: 250,
+    equipment: [],
+    electrical: [],
+  }
+}
+
+export function createEmptyPlan() {
+  return {
+    levels: [createEmptyLevel(0)],
+    stairs: [],
+    floorThickness: FLOOR_THICKNESS,
     structure: 'parpaing',
     roof: { kind: '2pans', pitch: 35, overhang: 40 },
     foundation: { depth: 80, soubassement: 50, footingWidth: 50, footingHeight: 30 },
@@ -44,8 +59,6 @@ export function createEmptyPlan() {
       etudeSol: true,
       assuranceDO: true,
     },
-    equipment: [],
-    electrical: [],
     diy: {},
     diyDefault: false,
     priceLevel: 'typ',
@@ -53,25 +66,83 @@ export function createEmptyPlan() {
   }
 }
 
-/** Complète un plan chargé depuis le stockage avec les champs manquants */
+/**
+ * Complète un plan chargé depuis le stockage.
+ *
+ * Les plans d'avant le passage aux étages n'ont pas de pile de niveaux : leurs
+ * murs, ouvertures et équipements sont repris tels quels comme rez-de-chaussée,
+ * sans rien perdre.
+ */
 export function normalisePlan(plan) {
   const base = createEmptyPlan()
   if (!plan) return base
-  return {
+
+  let levels = Array.isArray(plan.levels) && plan.levels.length ? plan.levels : null
+  if (!levels) {
+    levels = [{
+      ...createEmptyLevel(0),
+      ceilingHeight: plan.ceilingHeight || 250,
+      walls: plan.walls || [],
+      openings: plan.openings || [],
+      roomMeta: plan.roomMeta || [],
+      equipment: plan.equipment || [],
+      electrical: plan.electrical || [],
+    }]
+  }
+
+  const merged = {
     ...base,
     ...plan,
+    levels: levels.map((level, i) => ({ ...createEmptyLevel(i), ...level })),
+    stairs: plan.stairs || [],
+    floorThickness: plan.floorThickness ?? FLOOR_THICKNESS,
     roof: { ...base.roof, ...(plan.roof || {}) },
     foundation: { ...base.foundation, ...(plan.foundation || {}) },
     slab: { ...base.slab, ...(plan.slab || {}) },
     options: { ...base.options, ...(plan.options || {}) },
     diy: { ...(plan.diy || {}) },
     priceOverrides: { ...(plan.priceOverrides || {}) },
-    walls: plan.walls || [],
-    openings: plan.openings || [],
-    roomMeta: plan.roomMeta || [],
-    equipment: plan.equipment || [],
-    electrical: plan.electrical || [],
   }
+
+  // Les champs de l'ancien modèle sont retirés une fois repris dans le niveau :
+  // les laisser traîner à la racine ferait cohabiter deux vérités.
+  for (const key of ['walls', 'openings', 'roomMeta', 'equipment', 'electrical', 'ceilingHeight']) {
+    delete merged[key]
+  }
+  return merged
+}
+
+/** Altitude du plancher fini d'un niveau, en cm au-dessus de la dalle basse */
+export function levelElevation(plan, index) {
+  let z = 0
+  for (let i = 0; i < index && i < plan.levels.length; i++) {
+    z += (plan.levels[i].ceilingHeight || 250) + (plan.floorThickness ?? FLOOR_THICKNESS)
+  }
+  return z
+}
+
+/**
+ * Vue d'un niveau ayant la forme d'un plan complet.
+ *
+ * Tous les calculs — surfaces, plomberie, électricité — travaillent sur un
+ * niveau à la fois. Leur présenter un objet de la même forme qu'auparavant
+ * évite de les réécrire et garantit qu'ils restent justes étage par étage.
+ */
+export function levelPlan(plan, index = 0) {
+  const safe = Math.max(0, Math.min(index, plan.levels.length - 1))
+  const level = plan.levels[safe] || createEmptyLevel(0)
+  return {
+    ...plan,
+    ...level,
+    levelIndex: safe,
+    elevation: levelElevation(plan, safe),
+    isTopLevel: safe === plan.levels.length - 1,
+  }
+}
+
+/** Chaque niveau, vu comme un plan complet */
+export function eachLevel(plan) {
+  return plan.levels.map((_, i) => levelPlan(plan, i))
 }
 
 /* -------------------------------------------------- résolution des pièces */
@@ -133,15 +204,22 @@ export function computeSurfaces(plan) {
   const exteriorWalls = classified.filter(w => w.exterior)
   const interiorWalls = classified.filter(w => !w.exterior)
   const interiorBearing = interiorWalls.filter(w => w.kind === 'porteur')
-  const partitions = interiorWalls.filter(w => w.kind !== 'porteur')
+  const partitions = interiorWalls.filter(w => w.kind !== 'porteur' && w.kind !== 'garde-corps')
+  const railings = classified.filter(w => w.kind === 'garde-corps')
 
   const h = (plan.ceilingHeight || 250) / 100
   const exteriorLength = exteriorWalls.reduce((s, w) => s + wallLength(w), 0) / 100
   const interiorBearingLength = interiorBearing.reduce((s, w) => s + wallLength(w), 0) / 100
   const partitionLength = partitions.reduce((s, w) => s + wallLength(w), 0) / 100
+  const railingLength = railings.reduce((s, w) => s + wallLength(w), 0) / 100
 
-  const floorArea = rooms.reduce((s, r) => s + r.area, 0)
-  const footprint = contour.area || floorArea
+  // Une terrasse compte dans l'emprise mais jamais dans la surface habitable
+  const indoorRooms = rooms.filter(r => !r.typeInfo?.outdoor)
+  const outdoorRooms = rooms.filter(r => r.typeInfo?.outdoor)
+  const floorArea = indoorRooms.reduce((s, r) => s + r.area, 0)
+  const terraceArea = outdoorRooms.reduce((s, r) => s + r.area, 0)
+  const terracePerimeter = outdoorRooms.reduce((s, r) => s + r.perimeter, 0)
+  const footprint = contour.area || floorArea + terraceArea
   const perimeter = contour.perimeter || 0
 
   // Surfaces d'ouvertures, réparties entre murs extérieurs et cloisons
@@ -181,6 +259,7 @@ export function computeSurfaces(plan) {
     exteriorLength: round2(exteriorLength),
     interiorBearingLength: round2(interiorBearingLength),
     partitionLength: round2(partitionLength),
+    railingLength: round2(railingLength),
     exteriorWallArea: round2(exteriorWallArea),
     interiorBearingArea: round2(interiorBearingArea),
     partitionArea: round2(partitionArea),
@@ -189,6 +268,42 @@ export function computeSurfaces(plan) {
     roofArea: round2(roofArea),
     ceilingHeight: h,
     volume: round2(floorArea * h),
+    indoorRooms,
+    outdoorRooms,
+    terraceArea: round2(terraceArea),
+    terracePerimeter: round2(terracePerimeter),
+  }
+}
+
+/**
+ * Surfaces de l'ensemble du bâtiment, niveau par niveau.
+ * L'emprise au sol reste celle du rez-de-chaussée ; la surface habitable
+ * cumule les niveaux.
+ */
+export function computeBuildingSurfaces(rawPlan) {
+  // Un plan d'avant les étages, ou construit à la main, n'a pas de pile de
+  // niveaux : on le normalise plutôt que d'échouer.
+  const plan = Array.isArray(rawPlan?.levels) && rawPlan.levels.length
+    ? rawPlan
+    : normalisePlan(rawPlan)
+  const levels = eachLevel(plan).map(view => ({
+    level: view,
+    surfaces: computeSurfaces(view),
+  }))
+  const ground = levels[0]
+  const top = levels[levels.length - 1]
+
+  return {
+    levels,
+    ground: ground.surfaces,
+    top: top.surfaces,
+    levelCount: levels.length,
+    floorArea: round2(levels.reduce((s, l) => s + l.surfaces.floorArea, 0)),
+    terraceArea: round2(levels.reduce((s, l) => s + l.surfaces.terraceArea, 0)),
+    footprint: ground.surfaces.footprint,
+    perimeter: ground.surfaces.perimeter,
+    volume: round2(levels.reduce((s, l) => s + l.surfaces.volume, 0)),
+    rooms: levels.flatMap(l => l.surfaces.rooms.map(r => ({ ...r, levelName: l.level.name }))),
   }
 }
 
@@ -221,142 +336,213 @@ const STRUCTURAL_STAGES = [STAGE.TERRASSEMENT, STAGE.FONDATION, STAGE.ELEVATION,
  * Produit la liste des ouvrages avec leurs quantités.
  * @returns {Array<{itemId, qty, stage, detail}>}
  */
-export function computeQuantities(plan) {
-  const s = computeSurfaces(plan)
+export function computeQuantities(rawPlan) {
+  const plan = Array.isArray(rawPlan?.levels) && rawPlan.levels.length
+    ? rawPlan
+    : normalisePlan(rawPlan)
+  const building = computeBuildingSurfaces(plan)
+  const levels = building.levels
+  const ground = levels[0].surfaces
+  const top = levels[levels.length - 1].surfaces
   const opts = plan.options || {}
   const isNew = opts.mode !== 'renovation'
-  const lines = []
 
+  // Les ouvrages se répètent d'un niveau à l'autre : on cumule les quantités
+  // sur une seule ligne plutôt que d'en empiler une par étage.
+  const byItem = new Map()
   const add = (itemId, qty, stage, detail) => {
     if (!PRICE_BY_ID[itemId]) return
     if (!qty || qty <= 0) return
-    lines.push({ itemId, qty: round2(qty), stage, detail })
+    const existing = byItem.get(itemId)
+    if (existing) {
+      existing.qty = round2(existing.qty + qty)
+      if (detail && !existing.detail?.includes(detail)) {
+        existing.detail = existing.detail ? `${existing.detail} · ${detail}` : detail
+      }
+      return
+    }
+    byItem.set(itemId, { itemId, qty: round2(qty), stage, detail })
   }
 
   const fnd = plan.foundation || {}
   const slab = plan.slab || {}
   const structure = STRUCTURE_BY_ID[plan.structure] || STRUCTURE_BY_ID.parpaing
+  const multi = levels.length > 1
 
-  /* --- Terrassement et fondations (construction neuve uniquement) --- */
+  /* ================= Ouvrages comptés une seule fois ================= */
+
   if (isNew) {
-    const footingLength = s.perimeter + s.interiorBearingLength
-    add('terrassement', s.footprint * 0.4, STAGE.TERRASSEMENT,
-      `Décapage de la terre végétale sur l'emprise de ${s.footprint} m²`)
+    const footingLength = ground.perimeter + ground.interiorBearingLength
+    add('terrassement', ground.footprint * 0.4, STAGE.TERRASSEMENT,
+      `Décapage sur l'emprise de ${ground.footprint} m²`)
     add('fouilles', footingLength * 0.6 * ((fnd.depth || 80) / 100), STAGE.TERRASSEMENT,
-      `${round2(footingLength)} ml de rigole, largeur 60 cm, profondeur ${fnd.depth || 80} cm`)
+      `${round2(footingLength)} ml de rigole, profondeur ${fnd.depth || 80} cm`)
     add('fondation-beton', footingLength * ((fnd.footingWidth || 50) / 100) * ((fnd.footingHeight || 30) / 100), STAGE.FONDATION,
       `Semelle filante ${fnd.footingWidth || 50} × ${fnd.footingHeight || 30} cm sur ${round2(footingLength)} ml`)
     add('soubassement', footingLength * ((fnd.soubassement || 50) / 100), STAGE.FONDATION,
       `Élévation de ${fnd.soubassement || 50} cm entre semelle et dalle`)
-    add('herisson', s.footprint, STAGE.FONDATION,
-      `${slab.herisson || 20} cm de concassé compacté sous la dalle`)
-    add('isolation-sous-dalle', s.footprint, STAGE.FONDATION,
-      `Panneaux de ${slab.insulation || 12} cm sous la dalle`)
-    add('dalle-beton', s.footprint, STAGE.FONDATION,
-      `Dalle de ${slab.thickness || 15} cm sur ${s.footprint} m²`)
-  }
+    add('herisson', ground.footprint, STAGE.FONDATION, `${slab.herisson || 20} cm de concassé compacté`)
+    add('isolation-sous-dalle', ground.footprint, STAGE.FONDATION, `Panneaux de ${slab.insulation || 12} cm`)
+    add('dalle-beton', ground.footprint, STAGE.FONDATION, `Dalle de ${slab.thickness || 15} cm`)
 
-  /* --- Élévation --- */
-  if (isNew) {
-    add(structure.wallItem, s.exteriorWallArea + s.interiorBearingArea, STAGE.ELEVATION,
-      `${s.exteriorLength} ml de murs extérieurs${s.interiorBearingLength > 0 ? ` et ${s.interiorBearingLength} ml de refends` : ''} sur ${s.ceilingHeight} m de hauteur`)
-
-    const lintelLength = (plan.openings || []).reduce((sum, o) => sum + (o.width / 100) * 1.4, 0)
-    add('chainage', s.perimeter + s.interiorBearingLength + lintelLength, STAGE.ELEVATION,
-      `Chaînage en tête de mur + ${round2(lintelLength)} ml de linteaux au-dessus des ouvertures`)
-
-    if (opts.externalRender) {
-      add('enduit-exterieur', s.exteriorWallArea, STAGE.ELEVATION,
-        `Façades sur ${s.exteriorWallArea} m²`)
+    // Un plancher par niveau supplémentaire
+    for (let i = 1; i < levels.length; i++) {
+      const s = levels[i].surfaces
+      add('plancher-intermediaire', s.footprint, STAGE.FONDATION,
+        `${levels[i].level.name} sur ${s.footprint} m²`)
     }
-  }
 
-  /* --- Charpente et couverture --- */
-  if (isNew) {
     const roofKind = plan.roof?.kind
     if (roofKind !== 'plat') {
       const charpente = opts.amenagedAttic ? 'charpente-traditionnelle' : 'charpente-fermettes'
-      add(charpente, s.footprint, STAGE.COUVERTURE,
-        `Charpente sur une emprise de ${s.footprint} m²`)
-      add('couverture-tuiles', s.roofArea, STAGE.COUVERTURE,
-        `${s.roofArea} m² de rampant, pente ${plan.roof?.pitch || 35}°, débord ${plan.roof?.overhang || 40} cm`)
+      add(charpente, top.footprint, STAGE.COUVERTURE, `Sur une emprise de ${top.footprint} m²`)
+      add('couverture-tuiles', top.roofArea, STAGE.COUVERTURE,
+        `${top.roofArea} m² de rampant, pente ${plan.roof?.pitch || 35}°`)
     }
-    add('zinguerie', s.perimeter * 0.6, STAGE.COUVERTURE,
-      'Gouttières sur les rives basses de la toiture')
+    add('zinguerie', top.perimeter * 0.6, STAGE.COUVERTURE, 'Gouttières sur les rives basses')
+    add('isolation-combles', top.floorArea, STAGE.SECOND,
+      `Isolation en plafond du dernier niveau sur ${top.floorArea} m²`)
   }
 
-  /* --- Isolation --- */
-  const insulatedWallArea = s.exteriorWallArea
-  if (structure.needsInsulation || !isNew) {
-    add('isolation-murs', insulatedWallArea, STAGE.SECOND,
-      `Doublage isolant sur ${insulatedWallArea} m² de murs extérieurs`)
+  // Escaliers
+  for (const stair of plan.stairs || []) {
+    add('escalier', 1, STAGE.FINITION,
+      `${levels[stair.levelFrom]?.level.name || 'Niveau'} vers le niveau supérieur`)
   }
-  add('isolation-combles', s.footprint, STAGE.SECOND,
-    `Isolation en plafond sur ${s.footprint} m²`)
 
-  /* --- Cloisons et plâtrerie --- */
-  add('doublage-placo', insulatedWallArea, STAGE.SECOND,
-    `Contre-cloison sur les murs extérieurs`)
-  add('cloison-ba13', s.partitionArea, STAGE.SECOND,
-    `${s.partitionLength} ml de cloisons de distribution`)
-  add('plafond-placo', s.floorArea, STAGE.SECOND,
-    `Plafond sur ${s.floorArea} m² habitables`)
-  const plasterArea = insulatedWallArea + s.partitionArea * 2 + s.floorArea
-  add('bandes-enduit', plasterArea, STAGE.SECOND,
-    `Traitement des joints sur ${round2(plasterArea)} m² de plaques`)
+  /* ==================== Ouvrages répétés par niveau ==================== */
 
-  /* --- Électricité --- */
-  // Tant que rien n'est dessiné, on s'appuie sur les minimums de la norme.
-  // Dès qu'un appareillage est posé, on chiffre l'installation réelle.
-  const elec = planElectricalNeeds(s.rooms, opts)
-  const drawnElec = (plan.electrical || []).filter(d => d.type !== 'tableau')
+  for (const { level, surfaces: s } of levels) {
+    const name = level.name
 
-  if (drawnElec.length) {
-    const install = computeElectrical(plan, s)
-    add('tableau-electrique', 1, STAGE.SECOND,
-      `${install.circuits.length} circuits, ${install.differentials.length} interrupteurs différentiels`)
-    add('point-electrique', install.totals.devices, STAGE.SECOND,
-      `Relevé sur le plan : ${install.totals.devices} points, ${install.totals.conduitLength.toFixed(0)} m de gaine`)
-    add('circuit-specialise', install.circuits.filter(c => c.kind === 'special').length, STAGE.SECOND,
-      install.circuits.filter(c => c.kind === 'special').map(c => c.label).join(', '))
+    if (isNew) {
+      add(structure.wallItem, s.exteriorWallArea + s.interiorBearingArea, STAGE.ELEVATION,
+        `${name} : ${s.exteriorLength} ml de murs extérieurs`)
+      const lintelLength = (level.openings || []).reduce((sum, o) => sum + (o.width / 100) * 1.4, 0)
+      add('chainage', s.perimeter + s.interiorBearingLength + lintelLength, STAGE.ELEVATION,
+        `${name} : chaînage en tête de mur et linteaux`)
+      if (opts.externalRender) {
+        add('enduit-exterieur', s.exteriorWallArea, STAGE.ELEVATION, `${name} : ${s.exteriorWallArea} m² de façade`)
+      }
+    }
+
+    if (structure.needsInsulation || !isNew) {
+      add('isolation-murs', s.exteriorWallArea, STAGE.SECOND, `${name} : ${s.exteriorWallArea} m²`)
+    }
+    add('doublage-placo', s.exteriorWallArea, STAGE.SECOND, `${name}`)
+    add('cloison-ba13', s.partitionArea, STAGE.SECOND, `${name} : ${s.partitionLength} ml de cloisons`)
+    add('plafond-placo', s.floorArea, STAGE.SECOND, `${name} : ${s.floorArea} m²`)
+    add('bandes-enduit', s.exteriorWallArea + s.partitionArea * 2 + s.floorArea, STAGE.SECOND,
+      `${name}`)
+
+    // Terrasses : étanchéité seulement au-dessus d'un volume habité
+    if (s.terraceArea > 0) {
+      if (level.levelIndex > 0) {
+        add('etancheite-terrasse', s.terraceArea, STAGE.COUVERTURE,
+          `${name} : ${s.terraceArea} m² au-dessus du niveau inférieur`)
+      }
+      add('garde-corps', s.railingLength || s.terracePerimeter * 0.8, STAGE.FINITION,
+        `${name} : ${round2(s.railingLength || s.terracePerimeter * 0.8)} ml exposés`)
+    }
+
+    /* --- Menuiseries --- */
+    const byKind = {}
+    for (const o of level.openings || []) byKind[o.kind] = (byKind[o.kind] || 0) + 1
+    add('fenetre', byKind.fenetre || 0, STAGE.SECOND, null)
+    add('baie-vitree', byKind.baie || 0, STAGE.SECOND, null)
+    add('porte-entree', byKind['porte-entree'] || 0, STAGE.SECOND, null)
+    add('porte-interieure', byKind.porte || 0, STAGE.FINITION, null)
+    add('garage-porte', byKind['porte-garage'] || 0, STAGE.SECOND, null)
+
+    /* --- Revêtements --- */
+    const floorByMaterial = {}
+    for (const room of s.rooms) {
+      const material = room.typeInfo?.floor
+      if (!material) continue
+      floorByMaterial[material] = (floorByMaterial[material] || 0) + room.area
+    }
+    add('chape', s.floorArea, STAGE.FINITION, `${name} : ravoirage pour noyer les gaines`)
+    for (const [material, area] of Object.entries(floorByMaterial)) {
+      add(material, area, STAGE.FINITION, name)
+    }
+
+    const faienceArea = s.rooms.reduce((sum, r) => {
+      if (r.type === 'sdb') return sum + r.perimeter * 1.3
+      if (r.type === 'cuisine') return sum + 4
+      return sum
+    }, 0)
+    add('faience', faienceArea, STAGE.FINITION, 'Salles de bain et crédences')
+
+    const paintArea = s.indoorRooms.reduce((sum, r) => sum + r.perimeter * s.ceilingHeight, 0) + s.floorArea
+    add('peinture', Math.max(0, paintArea - s.exteriorOpeningArea), STAGE.FINITION, `${name}`)
+  }
+
+  /* ========================= Électricité ========================= */
+
+  const drawnElec = levels.reduce((n, l) => n + (l.level.electrical || []).filter(d => d.type !== 'tableau').length, 0)
+
+  if (drawnElec > 0) {
+    let devices = 0
+    let conduit = 0
+    let circuits = 0
+    const specials = new Set()
+    for (const { level, surfaces } of levels) {
+      if (!(level.electrical || []).length) continue
+      const install = computeElectrical(level, surfaces)
+      devices += install.totals.devices
+      conduit += install.totals.conduitLength
+      circuits += install.circuits.length
+      for (const c of install.circuits.filter(c => c.kind === 'special')) specials.add(c.label)
+    }
+    add('tableau-electrique', 1, STAGE.SECOND, `${circuits} circuits sur l'ensemble du bâtiment`)
+    add('point-electrique', devices, STAGE.SECOND,
+      `Relevé sur le plan : ${devices} points, ${conduit.toFixed(0)} m de gaine`)
+    add('circuit-specialise', specials.size, STAGE.SECOND, [...specials].join(', '))
   } else {
+    const elec = planElectricalNeeds(building.rooms, opts)
     add('tableau-electrique', 1, STAGE.SECOND,
       `${elec.circuits.length} circuits, ${elec.differentials.length} interrupteurs différentiels`)
     add('point-electrique', elec.totalPoints, STAGE.SECOND,
-      `Minimums NF C 15-100 : ${elec.sockets} prises, ${elec.lights} points lumineux, ${elec.network} RJ45`)
+      `Minimums NF C 15-100 : ${elec.sockets} prises, ${elec.lights} points lumineux`)
     add('circuit-specialise', elec.specialCircuits.length, STAGE.SECOND,
       elec.specialCircuits.map(c => c.label).join(', '))
   }
   if (isNew) add('consuel', 1, STAGE.DIVERS, 'Contrôle obligatoire avant mise en service')
 
-  /* --- Plomberie --- */
-  const wetRooms = s.rooms.filter(r => r.typeInfo?.wet)
-  const sdbCount = s.rooms.filter(r => r.type === 'sdb').length
-  const wcCount = s.rooms.filter(r => r.type === 'wc').length + sdbCount
-  const kitchenCount = s.rooms.filter(r => r.type === 'cuisine').length
-  const laundryCount = s.rooms.filter(r => r.type === 'buanderie').length
+  /* ========================== Plomberie ========================== */
 
-  // Dès que des appareils sont posés sur le plan, on remplace l'estimation
-  // forfaitaire par les longueurs réellement calculées sur le réseau.
-  const placed = plan.equipment || []
-  const plumbing = placed.length ? computePlumbing(plan, s) : null
+  const placedTotal = levels.reduce((n, l) => n + (l.level.equipment || []).length, 0)
 
-  if (plumbing) {
-    const countOf = (type) => placed.filter(e => e.type === type).length
-    add('point-eau', plumbing.totals.waterPoints, STAGE.SECOND,
-      `Relevé sur les ${placed.length} appareils placés sur le plan`)
-    add('evacuation', plumbing.totals.drainTotal * 1.15, STAGE.SECOND,
-      `Réseau tracé : ${plumbing.totals.drainTotal.toFixed(1)} ml, majorés de 15 % pour les chutes et reprises`)
-    add('sanitaire-wc', countOf('wc'), STAGE.FINITION, null)
-    add('sanitaire-douche', countOf('douche') + countOf('baignoire'), STAGE.FINITION, null)
-    add('sanitaire-lavabo', countOf('lavabo'), STAGE.FINITION, null)
-    add('sanitaire-evier', countOf('evier'), STAGE.FINITION, null)
+  if (placedTotal > 0) {
+    let waterPoints = 0
+    let drainLength = 0
+    const counts = {}
+    for (const { level, surfaces } of levels) {
+      const placed = level.equipment || []
+      if (!placed.length) continue
+      const network = computePlumbing(level, surfaces)
+      waterPoints += network.totals.waterPoints
+      drainLength += network.totals.drainTotal
+      for (const e of placed) counts[e.type] = (counts[e.type] || 0) + 1
+    }
+    add('point-eau', waterPoints, STAGE.SECOND, `Relevé sur ${placedTotal} appareils placés`)
+    add('evacuation', drainLength * 1.15, STAGE.SECOND,
+      `Réseau tracé : ${drainLength.toFixed(1)} ml, majorés de 15 % pour les chutes et reprises`)
+    add('sanitaire-wc', counts.wc || 0, STAGE.FINITION, null)
+    add('sanitaire-douche', (counts.douche || 0) + (counts.baignoire || 0), STAGE.FINITION, null)
+    add('sanitaire-lavabo', counts.lavabo || 0, STAGE.FINITION, null)
+    add('sanitaire-evier', counts.evier || 0, STAGE.FINITION, null)
   } else {
-    const waterPoints = sdbCount * 2 + wcCount + kitchenCount + laundryCount
-    add('point-eau', waterPoints, STAGE.SECOND,
+    const rooms = building.rooms
+    const sdbCount = rooms.filter(r => r.type === 'sdb').length
+    const wcCount = rooms.filter(r => r.type === 'wc').length + sdbCount
+    const kitchenCount = rooms.filter(r => r.type === 'cuisine').length
+    const laundryCount = rooms.filter(r => r.type === 'buanderie').length
+    const wetRooms = rooms.filter(r => r.typeInfo?.wet)
+    add('point-eau', sdbCount * 2 + wcCount + kitchenCount + laundryCount, STAGE.SECOND,
       `${sdbCount} salle(s) de bain, ${wcCount} WC, ${kitchenCount} cuisine(s)`)
-    add('evacuation', wetRooms.length * 6 + 8, STAGE.SECOND,
-      `Estimation forfaitaire — placez les appareils dans l'onglet Plomberie pour un métré exact`)
+    add('evacuation', wetRooms.length * 6 + 8 + (multi ? 6 : 0), STAGE.SECOND,
+      'Estimation forfaitaire — placez les appareils dans l\'onglet Plomberie pour un métré exact')
     add('sanitaire-wc', wcCount, STAGE.FINITION, null)
     add('sanitaire-douche', sdbCount, STAGE.FINITION, null)
     add('sanitaire-lavabo', sdbCount, STAGE.FINITION, null)
@@ -367,51 +553,16 @@ export function computeQuantities(plan) {
   if (opts.vmc) add('vmc', 1, STAGE.SECOND, 'Réseau double flux avec bouches dans chaque pièce')
 
   if (opts.heating === 'plancher') {
-    add('plancher-chauffant', s.floorArea, STAGE.SECOND, `Sur ${s.floorArea} m² habitables`)
+    add('plancher-chauffant', building.floorArea, STAGE.SECOND, `Sur ${building.floorArea} m² habitables`)
     add('pac-air-eau', 1, STAGE.SECOND, 'Générateur alimentant le plancher chauffant')
   } else if (opts.heating === 'radiateurs') {
     add('pac-air-eau', 1, STAGE.SECOND, 'Générateur alimentant les radiateurs')
-    add('radiateur', s.rooms.filter(r => r.type !== 'garage' && r.type !== 'wc').length, STAGE.SECOND,
-      'Un émetteur par pièce de vie')
+    add('radiateur', building.rooms.filter(r => !['garage', 'wc', 'terrasse'].includes(r.type)).length,
+      STAGE.SECOND, 'Un émetteur par pièce de vie')
   }
 
-  /* --- Menuiseries --- */
-  const byKind = {}
-  for (const o of plan.openings || []) {
-    byKind[o.kind] = (byKind[o.kind] || 0) + 1
-  }
-  add('fenetre', byKind.fenetre || 0, STAGE.SECOND, null)
-  add('baie-vitree', byKind.baie || 0, STAGE.SECOND, null)
-  add('porte-entree', byKind['porte-entree'] || 0, STAGE.SECOND, null)
-  add('porte-interieure', byKind.porte || 0, STAGE.FINITION, null)
-  add('garage-porte', byKind['porte-garage'] || 0, STAGE.SECOND, null)
+  /* ========================= Frais annexes ========================= */
 
-  /* --- Revêtements et finitions --- */
-  const floorByMaterial = {}
-  for (const room of s.rooms) {
-    const material = room.typeInfo?.floor
-    if (!material) continue
-    floorByMaterial[material] = (floorByMaterial[material] || 0) + room.area
-  }
-  add('chape', s.floorArea, STAGE.FINITION, `Ravoirage pour noyer les gaines sur ${s.floorArea} m²`)
-  for (const [material, area] of Object.entries(floorByMaterial)) {
-    const names = s.rooms.filter(r => r.typeInfo?.floor === material).map(r => r.name)
-    add(material, area, STAGE.FINITION, names.join(', '))
-  }
-
-  const faienceArea = s.rooms.reduce((sum, r) => {
-    if (r.type === 'sdb') return sum + r.perimeter * 1.3
-    if (r.type === 'cuisine') return sum + 4
-    return sum
-  }, 0)
-  add('faience', faienceArea, STAGE.FINITION,
-    'Salles de bain jusqu\'à 1,30 m de haut et crédence de cuisine')
-
-  const paintArea = s.rooms.reduce((sum, r) => sum + r.perimeter * s.ceilingHeight, 0) + s.floorArea
-  add('peinture', paintArea - s.exteriorOpeningArea, STAGE.FINITION,
-    `Murs et plafonds de toutes les pièces`)
-
-  /* --- Frais annexes --- */
   if (isNew) {
     add('raccordements', 1, STAGE.DIVERS, 'Eau, électricité et fibre depuis le domaine public')
     if (opts.etudeSol) add('etude-sol', 1, STAGE.DIVERS, 'Étude géotechnique G2 AVP')
@@ -419,7 +570,7 @@ export function computeQuantities(plan) {
     if (opts.assainissement) add('assainissement', 1, STAGE.DIVERS, 'Filière individuelle validée par le SPANC')
   }
 
-  return { lines, surfaces: s, electrical: elec }
+  return { lines: [...byItem.values()], surfaces: ground, building }
 }
 
 /* --------------------------------------------------------------- chiffrage */
@@ -437,7 +588,7 @@ export function isDiy(plan, itemId) {
  * par étape, et la comparaison auto-construction / tout entreprise.
  */
 export function computeEstimate(plan) {
-  const { lines, surfaces, electrical } = computeQuantities(plan)
+  const { lines, surfaces, building } = computeQuantities(plan)
   const level = plan.priceLevel || 'typ'
   const overrides = plan.priceOverrides || {}
 
@@ -479,12 +630,12 @@ export function computeEstimate(plan) {
   const byLot = groupTotals(detailed, l => l.lot)
   const byStage = groupTotals(detailed, l => l.stage)
 
-  const habitable = surfaces.floorArea || 1
+  const habitable = building.floorArea || 1
 
   return {
     lines: detailed,
     surfaces,
-    electrical,
+    building,
     totalMaterial,
     totalLabor,
     totalLaborFull,

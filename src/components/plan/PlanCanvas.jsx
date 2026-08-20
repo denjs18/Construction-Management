@@ -17,12 +17,14 @@ const HANDLE_TOUCH = 22
 
 const PlanCanvas = forwardRef(function PlanCanvas({
   walls = [],
+  ghostWalls = [],
   rooms = [],
   openings = [],
   equipment = [],
   electrical = [],
   routes = [],
   reservations = [],
+  stairs = [],
   draft = null,
   cursor = null,
   selectedWallId = null,
@@ -261,12 +263,28 @@ const PlanCanvas = forwardRef(function PlanCanvas({
             strokeWidth="1"
           />
         </pattern>
+        <marker id="stair-arrow" viewBox="0 0 10 10" refX="8" refY="5"
+          markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#B45309" />
+        </marker>
       </defs>
 
       <rect width="100%" height="100%" fill="url(#grid)" />
       <rect width="100%" height="100%" fill="url(#grid-major)" />
 
       <g transform={`scale(${view.scale}) translate(${-view.ox} ${-view.oy})`}>
+        {/* Report du niveau inférieur : repère pour aligner les murs porteurs */}
+        {ghostWalls.map(wall => (
+          <line
+            key={`ghost-${wall.id}`}
+            x1={wall.a.x} y1={wall.a.y} x2={wall.b.x} y2={wall.b.y}
+            stroke="#CBD5E1"
+            strokeWidth={wall.thickness}
+            strokeLinecap="round"
+            opacity={0.55}
+          />
+        ))}
+
         {/* Pièces */}
         {rooms.map(room => (
           <g key={room.id}>
@@ -444,6 +462,60 @@ const PlanCanvas = forwardRef(function PlanCanvas({
             >
               {formatMeters(dist(wall.a, wall.b))}
             </text>
+          )
+        })}
+
+        {/* Escaliers */}
+        {stairs.map(stair => {
+          const angle = ((stair.rotation || 0) * Math.PI) / 180
+          const dx = Math.cos(angle)
+          const dy = Math.sin(angle)
+          const nx = -dy
+          const ny = dx
+          const half = stair.geometry.width / 2
+          const { x, y } = stair.point
+          const run = stair.geometry.run
+          const corners = [
+            [x + nx * half, y + ny * half],
+            [x + dx * run + nx * half, y + dy * run + ny * half],
+            [x + dx * run - nx * half, y + dy * run - ny * half],
+            [x - nx * half, y - ny * half],
+          ]
+          const steps = []
+          for (let i = 1; i < stair.geometry.steps; i++) {
+            const t = (run * i) / stair.geometry.steps
+            steps.push([
+              [x + dx * t + nx * half, y + dy * t + ny * half],
+              [x + dx * t - nx * half, y + dy * t - ny * half],
+            ])
+          }
+          return (
+            <g key={stair.id} opacity={stair.arriving ? 0.4 : 1}>
+              <polygon
+                points={corners.map(c => c.join(',')).join(' ')}
+                fill="#FDF3E3" stroke="#B45309" strokeWidth={px(1.5)}
+              />
+              {steps.map((seg, i) => (
+                <line
+                  key={i}
+                  x1={seg[0][0]} y1={seg[0][1]} x2={seg[1][0]} y2={seg[1][1]}
+                  stroke="#D9A353" strokeWidth={px(1)}
+                />
+              ))}
+              <line
+                x1={x + dx * run * 0.15} y1={y + dy * run * 0.15}
+                x2={x + dx * run * 0.85} y2={y + dy * run * 0.85}
+                stroke="#B45309" strokeWidth={px(2)}
+                markerEnd="url(#stair-arrow)"
+              />
+              <text
+                x={x + dx * run * 0.5 + nx * (half + px(9))}
+                y={y + dy * run * 0.5 + ny * (half + px(9))}
+                textAnchor="middle" fontSize={px(10)} fill="#B45309" fontWeight="700"
+              >
+                {stair.arriving ? 'arrivée' : `${stair.geometry.steps} marches`}
+              </text>
+            </g>
           )
         })}
 

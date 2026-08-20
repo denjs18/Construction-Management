@@ -6,7 +6,9 @@ import {
 } from 'lucide-react'
 import Header from '../layout/Header'
 import { useApp } from '../../contexts/AppContext'
-import { computeSurfaces, computeEstimate, hoursToDays } from '../../lib/metre'
+import {
+  computeSurfaces, computeBuildingSurfaces, computeEstimate, hoursToDays, levelPlan,
+} from '../../lib/metre'
 import { computeElectrical } from '../../lib/electrical'
 import { computePlumbing } from '../../lib/plumbing'
 import { buildScene, projectScene, drawScene, defaultCamera, ridgeHeight } from '../../lib/render3d'
@@ -34,19 +36,24 @@ export default function View3D() {
   const [stageIndex, setStageIndex] = useState(null) // null = maison terminée
   const [showNetworks, setShowNetworks] = useState(false)
 
-  const surfaces = useMemo(() => computeSurfaces(plan), [plan])
+  const [onlyLevel, setOnlyLevel] = useState(null) // null = tous les niveaux
+  const building = useMemo(() => computeBuildingSurfaces(plan), [plan])
+  const surfaces = building.ground
+  // Les murs extérieurs se déterminent niveau par niveau : un mur du premier
+  // étage peut être extérieur alors que celui qui le porte ne l'est pas.
   const exteriorWallIds = useMemo(
-    () => surfaces.exteriorWalls.map(w => w.id),
-    [surfaces],
+    () => building.levels.flatMap(l => l.surfaces.exteriorWalls.map(w => w.id)),
+    [building],
   )
 
   const estimate = useMemo(() => computeEstimate(plan), [plan])
   const stage = stageIndex === null ? null : BUILD_STAGES[stageIndex]
 
+  const groundView = useMemo(() => levelPlan(plan, 0), [plan])
   const networks = useMemo(() => ({
-    electrical: computeElectrical(plan, surfaces),
-    plumbing: computePlumbing(plan, surfaces),
-  }), [plan, surfaces])
+    electrical: computeElectrical(groundView, building.ground),
+    plumbing: computePlumbing(groundView, building.ground),
+  }), [groundView, building])
 
   const hasNetworks = networks.electrical.routes.length > 0 || networks.plumbing.routes.length > 0
 
@@ -59,8 +66,10 @@ export default function View3D() {
       stage: stage?.id,
       networks,
       showNetworks,
+      onlyLevel,
+      terraces: building.top.outdoorRooms.map(r => r.points),
     }),
-    [plan, showRoof, exploded, exteriorWallIds, showStructure, stage, networks, showNetworks],
+    [plan, showRoof, exploded, exteriorWallIds, showStructure, stage, networks, showNetworks, onlyLevel, building],
   )
 
   const [camera, setCamera] = useState(() => defaultCamera(scene.bbox))
@@ -170,7 +179,7 @@ export default function View3D() {
 
   /* ------------------------------------------------------------ écran */
 
-  if (!(plan.walls || []).length) {
+  if (!(plan.levels || []).some(l => (l.walls || []).length)) {
     return (
       <div className="pb-24 min-h-screen bg-slate-50">
         <Header title="Vue 3D" back />
@@ -194,6 +203,34 @@ export default function View3D() {
   return (
     <div className="pb-24 bg-slate-50 min-h-screen">
       <Header title="Vue 3D" back />
+
+      {plan.levels.length > 1 && (
+        <div className="bg-slate-800 px-3 py-2 flex items-center gap-1.5 overflow-x-auto">
+          <button
+            onClick={() => { setOnlyLevel(null); resetCamera() }}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex-shrink-0 ${
+              onlyLevel === null ? 'bg-white text-slate-900' : 'bg-white/10 text-white/70'
+            }`}
+          >
+            Tout le bâtiment
+          </button>
+          {plan.levels.map((lvl, i) => (
+            <button
+              key={lvl.id || i}
+              onClick={() => {
+                setOnlyLevel(i)
+                // On plonge la caméra pour regarder dans le niveau isolé
+                setCamera(c => ({ ...c, elevation: Math.max(c.elevation, 0.95) }))
+              }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex-shrink-0 ${
+                onlyLevel === i ? 'bg-white text-slate-900' : 'bg-white/10 text-white/70'
+              }`}
+            >
+              {i === 0 ? 'RDC seul' : `Étage ${i} seul`}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="relative bg-slate-200" style={{ height: 420 }}>
         <canvas
@@ -230,6 +267,17 @@ export default function View3D() {
           )}
         </div>
 
+        {onlyLevel !== null && (
+          <div className="absolute bottom-2 left-2 right-2 bg-white/95 rounded-xl px-3 py-2 shadow-sm">
+            <p className="text-[11px] text-gray-700 leading-relaxed">
+              <span className="font-semibold">
+                {onlyLevel === 0 ? 'Rez-de-chaussée' : `Étage ${onlyLevel}`} isolé
+              </span>
+              {' — '}toiture et autres niveaux retirés pour voir l'aménagement.
+            </p>
+          </div>
+        )}
+
         {stage ? (
           <div className="absolute top-2 left-2 bg-white/95 rounded-xl px-3 py-2 shadow-sm max-w-[62%]">
             <p className="text-[10px] font-semibold text-blue-600 uppercase tracking-wide">
@@ -239,13 +287,13 @@ export default function View3D() {
               {stage.icon} {stage.label}
             </p>
           </div>
-        ) : (
+        ) : onlyLevel === null ? (
           <div className="absolute bottom-2 left-2 bg-white/90 rounded-xl px-3 py-1.5">
             <p className="text-[11px] text-gray-600">
               Un doigt pour tourner · deux doigts pour zoomer
             </p>
           </div>
-        )}
+        ) : null}
       </div>
 
       {showNetworks && (
@@ -287,21 +335,24 @@ export default function View3D() {
 
       <div className="p-4 space-y-3">
         <div className="grid grid-cols-3 gap-2">
-          <Stat value={`${surfaces.floorArea.toFixed(1).replace('.', ',')} m²`} label="Habitable" />
+          <Stat value={`${building.floorArea.toFixed(1).replace('.', ',')} m²`} label="Habitable" />
           <Stat value={`${(faitage / 100).toFixed(2).replace('.', ',')} m`} label="Hauteur faîtage" />
-          <Stat value={`${surfaces.roofArea.toFixed(0)} m²`} label="Toiture" />
+          <Stat value={`${building.top.roofArea.toFixed(0)} m²`} label="Toiture" />
         </div>
 
         <div className="card space-y-2">
           <h3 className="font-semibold text-gray-900 text-sm">Volumétrie</h3>
-          <Row label="Emprise au sol" value={`${surfaces.footprint.toFixed(1).replace('.', ',')} m²`} />
-          <Row label="Hauteur sous plafond" value={`${plan.ceilingHeight} cm`} />
+          <Row label="Emprise au sol" value={`${building.footprint.toFixed(1).replace('.', ',')} m²`} />
+          <Row label="Niveaux" value={plan.levels.map((l, i) => `${i === 0 ? 'RDC' : `Étage ${i}`} ${l.ceilingHeight} cm`).join(' · ')} />
+          {building.terraceArea > 0 && (
+            <Row label="Terrasses" value={`${building.terraceArea.toFixed(1).replace('.', ',')} m²`} />
+          )}
           <Row
             label="Toiture"
             value={plan.roof?.kind === 'plat' ? roofLabel : `${roofLabel}, pente ${plan.roof?.pitch ?? 35}°`}
           />
           <Row label="Débord de toit" value={`${plan.roof?.overhang ?? 40} cm`} />
-          <Row label="Volume chauffé" value={`${surfaces.volume.toFixed(0)} m³`} />
+          <Row label="Volume chauffé" value={`${building.volume.toFixed(0)} m³`} />
         </div>
 
         <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 flex gap-2">

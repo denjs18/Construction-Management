@@ -3,7 +3,7 @@ import { useApp } from '../../contexts/AppContext'
 import { Link, useNavigate } from 'react-router-dom'
 import { CheckCircle2, Circle, Clock, TrendingUp, ChevronRight, Plus, AlertCircle, Ruler, Box, Calculator } from 'lucide-react'
 import { BUDGET_LOTS } from '../../data/templates'
-import { computeSurfaces, computeEstimate } from '../../lib/metre'
+import { computeBuildingSurfaces, computeEstimate } from '../../lib/metre'
 import { formatEuroShort } from '../../data/prices'
 
 /**
@@ -13,11 +13,11 @@ import { formatEuroShort } from '../../data/prices'
 function PlanCard() {
   const { activePlan } = useApp()
   const navigate = useNavigate()
-  const hasPlan = (activePlan?.walls || []).length > 0
+  const hasPlan = (activePlan?.levels || []).some(l => (l.walls || []).length > 0)
 
   const summary = useMemo(() => {
     if (!hasPlan) return null
-    const surfaces = computeSurfaces(activePlan)
+    const surfaces = computeBuildingSurfaces(activePlan)
     const estimate = computeEstimate(activePlan)
     return { surfaces, estimate }
   }, [activePlan, hasPlan])
@@ -54,7 +54,12 @@ function PlanCard() {
 
       <div className="grid grid-cols-3 gap-2">
         <MiniStat value={`${summary.surfaces.floorArea.toFixed(0)} m²`} label="Habitable" />
-        <MiniStat value={summary.surfaces.rooms.length} label="Pièces" />
+        <MiniStat
+          value={summary.surfaces.levelCount > 1
+            ? `${summary.surfaces.levelCount} niv.`
+            : summary.surfaces.rooms.length}
+          label={summary.surfaces.levelCount > 1 ? 'Niveaux' : 'Pièces'}
+        />
         <MiniStat value={formatEuroShort(summary.estimate.total)} label="Estimé" />
       </div>
 

@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   MousePointer2, PenLine, DoorOpen, Home, Undo2, Trash2, Maximize2,
-  Check, X, Calculator, Settings2, Box, Droplets, Zap,
+  Check, X, Calculator, Settings2, Box, Droplets, Zap, MoveVertical, RotateCw, AlertTriangle, Info,
 } from 'lucide-react'
 import Header from '../layout/Header'
 import PlanCanvas from '../plan/PlanCanvas'
@@ -12,8 +12,9 @@ import {
   rectanglePlan, setWallLength, projectOnSegment, healDanglingEnds,
   uniqueNodes, snapDrag, NODE_TOLERANCE,
 } from '../../lib/geometry'
-import { computeSurfaces } from '../../lib/metre'
+import { computeSurfaces, levelPlan, createEmptyLevel } from '../../lib/metre'
 import { STRUCTURE_TYPES, STRUCTURE_BY_ID, ROOM_TYPES, ROOF_TYPES } from '../../data/prices'
+import { stairGeometry, checkStair, STAIR_KINDS } from '../../lib/stairs'
 
 const OPENING_KINDS = [
   { id: 'fenetre', label: 'Fenêtre', icon: '🪟', width: 120, height: 115, sill: 95 },
@@ -28,11 +29,12 @@ const MODES = [
   { id: 'draw', label: 'Murs', icon: PenLine },
   { id: 'opening', label: 'Ouvertures', icon: DoorOpen },
   { id: 'room', label: 'Pièces', icon: Home },
+  { id: 'stair', label: 'Escalier', icon: MoveVertical },
 ]
 
 export default function PlanEditor() {
   const navigate = useNavigate()
-  const { activePlan, updatePlan } = useApp()
+  const { activePlan, updatePlan, updateLevel } = useApp()
   const canvasRef = useRef(null)
 
   const [mode, setMode] = useState('view')
@@ -46,14 +48,22 @@ export default function PlanEditor() {
   const [activeHandleId, setActiveHandleId] = useState(null)
   const [guides, setGuides] = useState([])
   const [historyDepth, setHistoryDepth] = useState(0)
+  const [activeLevel, setActiveLevel] = useState(0)
   const dragRef = useRef(null)
   const historyRef = useRef([])
   const sheetTouchedRef = useRef(false)
 
   const plan = activePlan
-  const surfaces = useMemo(() => computeSurfaces(plan), [plan])
+  const levelIndex = Math.min(activeLevel, plan.levels.length - 1)
+  const level = plan.levels[levelIndex]
+  const view = useMemo(() => levelPlan(plan, levelIndex), [plan, levelIndex])
+  const surfaces = useMemo(() => computeSurfaces(view), [view])
   const rooms = surfaces.rooms
-  const walls = plan.walls || []
+  const walls = level.walls || []
+  // Le niveau inférieur sert de calque de report : sans lui, impossible
+  // d'aligner les murs d'un étage sur ceux qui le portent.
+  const ghostWalls = levelIndex > 0 ? (plan.levels[levelIndex - 1].walls || []) : []
+  const setLevelData = (patch) => updateLevel(levelIndex, patch)
 
   const structure = STRUCTURE_BY_ID[plan.structure] || STRUCTURE_TYPES[0]
   const defaultThickness = wallKind === 'porteur' ? structure.thickness : 7
@@ -65,11 +75,11 @@ export default function PlanEditor() {
 
   const selectedWall = walls.find(w => w.id === selectedWallId) || null
   const selectedRoom = rooms.find(r => r.id === selectedRoomId) || null
-  const selectedOpening = (plan.openings || []).find(o => o.id === selectedOpeningId) || null
+  const selectedOpening = (level.openings || []).find(o => o.id === selectedOpeningId) || null
 
   /* ------------------------------------------------------------ actions */
 
-  const setWalls = (next) => updatePlan({ walls: next })
+  const setWalls = (next) => setLevelData({ walls: next })
 
   /* ------------------------------------------------------------ annulation */
 
@@ -81,9 +91,9 @@ export default function PlanEditor() {
    */
   const pushHistory = () => {
     historyRef.current.push({
-      walls: plan.walls,
-      openings: plan.openings,
-      roomMeta: plan.roomMeta,
+      walls: level.walls,
+      openings: level.openings,
+      roomMeta: level.roomMeta,
     })
     if (historyRef.current.length > 40) historyRef.current.shift()
     setHistoryDepth(historyRef.current.length)
@@ -104,7 +114,7 @@ export default function PlanEditor() {
     const previous = historyRef.current.pop()
     setHistoryDepth(historyRef.current.length)
     if (!previous) return
-    updatePlan(previous)
+    setLevelData(previous)
     setSelectedWallId(null)
     setSelectedOpeningId(null)
     setDraft(null)
@@ -126,7 +136,7 @@ export default function PlanEditor() {
       kind: 'node',
       point: { x: node.x, y: node.y },
     }))
-    for (const opening of plan.openings || []) {
+    for (const opening of level.openings || []) {
       const wall = walls.find(w => w.id === opening.wallId)
       if (!wall) continue
       const len = dist(wall.a, wall.b)
@@ -139,7 +149,7 @@ export default function PlanEditor() {
       })
     }
     return list
-  }, [walls, plan.openings, mode])
+  }, [walls, level.openings, mode])
 
   const pickHandle = (world, tolerance) => {
     if (mode !== 'view') return null
@@ -235,7 +245,7 @@ export default function PlanEditor() {
     }
 
     if (drag.kind === 'opening') {
-      const opening = (plan.openings || []).find(o => o.id === drag.openingId)
+      const opening = (level.openings || []).find(o => o.id === drag.openingId)
       if (!opening) return
       // On autorise le passage d'un mur à l'autre : on cherche le mur le plus
       // proche du doigt, puis on borne la position pour que l'ouverture y tienne.
@@ -249,8 +259,8 @@ export default function PlanEditor() {
       if (!target) return
       const half = opening.width / 2
       const offset = Math.round(Math.min(target.len - half, Math.max(half, target.t * target.len)))
-      updatePlan({
-        openings: (plan.openings || []).map(o =>
+      setLevelData({
+        openings: (level.openings || []).map(o =>
           (o.id === opening.id ? { ...o, wallId: target.wall.id, offset } : o)),
       })
     }
@@ -327,10 +337,26 @@ export default function PlanEditor() {
         sill: kind.sill,
         kind: kind.id,
       }
-      updatePlan({ openings: [...(plan.openings || []), opening] })
+      setLevelData({ openings: [...(level.openings || []), opening] })
       setSelectedOpeningId(opening.id)
       setSelectedWallId(null)
       setSelectedRoomId(null)
+      return
+    }
+
+    if (mode === 'stair') {
+      if (levelIndex >= plan.levels.length - 1) return
+      updatePlan({
+        stairs: [...(plan.stairs || []), {
+          id: `st${Date.now().toString(36)}`,
+          levelFrom: levelIndex,
+          point: { x: Math.round(world.x / 10) * 10, y: Math.round(world.y / 10) * 10 },
+          rotation: 0,
+          width: 90,
+          kind: 'droit',
+        }],
+      })
+      setMode('view')
       return
     }
 
@@ -361,9 +387,9 @@ export default function PlanEditor() {
 
   const deleteWall = (id) => {
     pushHistory()
-    updatePlan({
+    setLevelData({
       walls: walls.filter(w => w.id !== id),
-      openings: (plan.openings || []).filter(o => o.wallId !== id),
+      openings: (level.openings || []).filter(o => o.wallId !== id),
     })
     setSelectedWallId(null)
   }
@@ -373,14 +399,14 @@ export default function PlanEditor() {
     const d = Math.round(depthM * 100)
     if (w < 200 || d < 200) return
     pushHistory()
-    updatePlan({ walls: [...walls, ...rectanglePlan(w, d, structure.thickness)] })
+    setLevelData({ walls: [...walls, ...rectanglePlan(w, d, structure.thickness)] })
     setSheet(null)
     setMode('view')
     setTimeout(() => canvasRef.current?.fit(), 60)
   }
 
   const setRoomMeta = (room, patch) => {
-    const metas = plan.roomMeta || []
+    const metas = level.roomMeta || []
     const existing = metas.find(m => m.id === room.metaId)
     let next
     if (existing) {
@@ -394,7 +420,7 @@ export default function PlanEditor() {
         ...patch,
       }]
     }
-    updatePlan({ roomMeta: next })
+    setLevelData({ roomMeta: next })
   }
 
   const isEmpty = walls.length === 0
@@ -404,6 +430,26 @@ export default function PlanEditor() {
   return (
     <div className="pb-24 bg-slate-50 min-h-screen">
       <Header title="Plan de la maison" back />
+
+      {/* Niveaux */}
+      <LevelBar
+        levels={plan.levels}
+        activeIndex={levelIndex}
+        onSelect={(i) => { setActiveLevel(i); setDraft(null); setMode('view'); setSelectedWallId(null); setSelectedRoomId(null) }}
+        onAdd={() => {
+          const next = createEmptyLevel(plan.levels.length)
+          updatePlan({ levels: [...plan.levels, next] })
+          setActiveLevel(plan.levels.length)
+        }}
+        onRemove={() => {
+          if (plan.levels.length < 2) return
+          updatePlan({
+            levels: plan.levels.filter((_, i) => i !== levelIndex),
+            stairs: (plan.stairs || []).filter(st => st.levelFrom !== levelIndex),
+          })
+          setActiveLevel(Math.max(0, levelIndex - 1))
+        }}
+      />
 
       {/* Barre de modes */}
       <div className="bg-white border-b border-gray-100 px-3 py-2 sticky top-0 z-20">
@@ -432,11 +478,22 @@ export default function PlanEditor() {
         <PlanCanvas
           ref={canvasRef}
           walls={walls}
+          ghostWalls={ghostWalls}
           rooms={rooms}
-          openings={plan.openings || []}
+          openings={level.openings || []}
           draft={draft}
           selectedWallId={selectedWallId}
           selectedRoomId={selectedRoomId}
+          stairs={(plan.stairs || [])
+            .filter(st => st.levelFrom === levelIndex || st.levelFrom === levelIndex - 1)
+            .map(st => ({
+              ...st,
+              arriving: st.levelFrom === levelIndex - 1,
+              geometry: stairGeometry(
+                (plan.levels[st.levelFrom]?.ceilingHeight || 250) + plan.floorThickness,
+                st.kind, st.width,
+              ),
+            }))}
           handles={handles}
           activeHandleId={activeHandleId}
           guides={guides}
@@ -585,10 +642,20 @@ export default function PlanEditor() {
             <div className="flex-1 text-left">
               <p className="font-semibold text-sm text-gray-900">Caractéristiques du bâtiment</p>
               <p className="text-xs text-gray-500">
-                {structure.label} · {plan.ceilingHeight} cm sous plafond · toit {ROOF_TYPES.find(r => r.id === plan.roof?.kind)?.label.toLowerCase()}
+                {structure.label} · {level.ceilingHeight} cm sous plafond · toit {ROOF_TYPES.find(r => r.id === plan.roof?.kind)?.label.toLowerCase()}
               </p>
             </div>
           </button>
+
+          <StairList
+            plan={plan}
+            levelIndex={levelIndex}
+            onChange={(id, patch) => updatePlan({
+              stairs: (plan.stairs || []).map(st => (st.id === id ? { ...st, ...patch } : st)),
+            })}
+            onRemove={(id) => updatePlan({ stairs: (plan.stairs || []).filter(st => st.id !== id) })}
+            onAdd={() => setMode('stair')}
+          />
 
           {rooms.length > 0 && (
             <div className="card">
@@ -661,13 +728,13 @@ export default function PlanEditor() {
           onClose={() => setSelectedOpeningId(null)}
           onChange={(patch) => {
             pushHistoryOnce()
-            updatePlan({
-              openings: (plan.openings || []).map(o => (o.id === selectedOpening.id ? { ...o, ...patch } : o)),
+            setLevelData({
+              openings: (level.openings || []).map(o => (o.id === selectedOpening.id ? { ...o, ...patch } : o)),
             })
           }}
           onDelete={() => {
             pushHistory()
-            updatePlan({ openings: (plan.openings || []).filter(o => o.id !== selectedOpening.id) })
+            setLevelData({ openings: (level.openings || []).filter(o => o.id !== selectedOpening.id) })
             setSelectedOpeningId(null)
           }}
         />
@@ -675,7 +742,13 @@ export default function PlanEditor() {
 
       {sheet === 'rect' && <RectangleSheet onClose={() => setSheet(null)} onCreate={createRectangle} />}
       {sheet === 'settings' && (
-        <BuildingSheet plan={plan} onClose={() => setSheet(null)} onChange={updatePlan} />
+        <BuildingSheet
+          plan={plan}
+          level={level}
+          onClose={() => setSheet(null)}
+          onChange={updatePlan}
+          onLevelChange={setLevelData}
+        />
       )}
     </div>
   )
@@ -707,6 +780,7 @@ function ModeHelp({ mode, isEmpty, drafting }) {
       : "Touchez l'écran pour poser le premier point. Les extrémités s'aimantent aux murs existants.",
     opening: "Touchez un mur à l'endroit où vous voulez poser une fenêtre ou une porte.",
     room: 'Touchez une pièce pour lui donner un nom et un type.',
+    stair: "Touchez le départ de l'escalier, en bas de la volée. Il monte vers le niveau du dessus.",
   }
   const text = texts[mode]
   if (!text) return null
@@ -823,16 +897,17 @@ function WallSheet({ wall, onClose, onChange, onLength, onDelete }) {
           {[
             { id: 'porteur', label: 'Mur porteur', desc: 'Structure' },
             { id: 'cloison', label: 'Cloison', desc: 'Distribution' },
+            { id: 'garde-corps', label: 'Garde-corps', desc: 'Terrasse' },
           ].map(k => (
             <button
               key={k.id}
-              onClick={() => onChange({ kind: k.id, thickness: k.id === 'porteur' ? 20 : 7 })}
+              onClick={() => onChange({ kind: k.id, thickness: k.id === 'porteur' ? 20 : k.id === 'garde-corps' ? 10 : 7 })}
               className={`flex-1 p-3 rounded-2xl border-2 text-left ${
                 wall.kind === k.id ? 'border-blue-500 bg-blue-50' : 'border-gray-100 bg-white'
               }`}
             >
-              <p className="font-semibold text-sm text-gray-900">{k.label}</p>
-              <p className="text-xs text-gray-500">{k.desc}</p>
+              <p className="font-semibold text-[13px] text-gray-900 leading-tight">{k.label}</p>
+              <p className="text-[11px] text-gray-500">{k.desc}</p>
             </button>
           ))}
         </div>
@@ -990,7 +1065,7 @@ function RectangleSheet({ onClose, onCreate }) {
   )
 }
 
-function BuildingSheet({ plan, onClose, onChange }) {
+function BuildingSheet({ plan, level, onClose, onChange, onLevelChange }) {
   return (
     <Sheet title="Caractéristiques du bâtiment" onClose={onClose}>
       <div>
@@ -1043,11 +1118,19 @@ function BuildingSheet({ plan, onClose, onChange }) {
       />
 
       <NumberField
-        label="Hauteur sous plafond"
-        value={plan.ceilingHeight}
+        label={`Hauteur sous plafond — ${level.name}`}
+        value={level.ceilingHeight}
         unit="cm"
-        onChange={v => onChange({ ceilingHeight: Math.max(200, Math.min(400, parseInt(v, 10) || 250)) })}
-        help="250 cm est le standard. 220 cm est le minimum réglementaire pour une pièce habitable."
+        onChange={v => onLevelChange({ ceilingHeight: Math.max(200, Math.min(400, parseInt(v, 10) || 250)) })}
+        help="250 cm est le standard, et chaque niveau peut avoir la sienne. 180 cm est la hauteur en dessous de laquelle une surface ne compte plus comme habitable."
+      />
+
+      <NumberField
+        label="Épaisseur du plancher entre niveaux"
+        value={plan.floorThickness}
+        unit="cm"
+        onChange={v => onChange({ floorThickness: Math.max(15, Math.min(50, parseInt(v, 10) || 25)) })}
+        help="Poutrelles, hourdis, dalle de compression et chape. 25 cm est courant. Cette épaisseur s'ajoute à la hauteur sous plafond pour donner la hauteur d'étage, et donc le nombre de marches de l'escalier."
       />
 
       <NumberField
@@ -1071,7 +1154,7 @@ function Row({ label, value }) {
 }
 
 function findOpeningAt(plan, walls, world) {
-  for (const o of plan.openings || []) {
+  for (const o of (plan.openings || plan.levels?.[0]?.openings || [])) {
     const wall = walls.find(w => w.id === o.wallId)
     if (!wall) continue
     const p = projectOnSegment(world, wall.a, wall.b)
@@ -1080,4 +1163,178 @@ function findOpeningAt(plan, walls, world) {
     if (p.distance < wall.thickness / 2 + 10 && Math.abs(p.t - centre) * len < o.width / 2) return o
   }
   return null
+}
+
+
+/* ------------------------------------------------------ barre de niveaux */
+
+/**
+ * Sélecteur d'étage. Chaque niveau porte ses propres murs, ouvertures et
+ * équipements ; le plan complet n'est que leur empilement.
+ */
+function LevelBar({ levels, activeIndex, onSelect, onAdd, onRemove }) {
+  return (
+    <div className="bg-slate-800 px-3 py-2">
+      <div className="flex items-center gap-1.5 overflow-x-auto">
+        {levels.map((level, i) => (
+          <button
+            key={level.id || i}
+            onClick={() => onSelect(i)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap flex-shrink-0 ${
+              i === activeIndex ? 'bg-white text-slate-900' : 'bg-white/10 text-white/70'
+            }`}
+          >
+            {i === 0 ? 'RDC' : `Étage ${i}`}
+          </button>
+        ))}
+        <button
+          onClick={onAdd}
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-blue-600 text-white flex-shrink-0"
+        >
+          + Étage
+        </button>
+        {levels.length > 1 && activeIndex > 0 && (
+          <button
+            onClick={onRemove}
+            className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-red-500/20 text-red-200 flex-shrink-0"
+          >
+            Supprimer
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+/* ---------------------------------------------------------- escaliers */
+
+/**
+ * Escaliers partant du niveau affiché.
+ *
+ * Le nombre de marches découle de la hauteur d'étage : on ne le saisit pas, on
+ * le constate. Ce qui se règle, c'est la forme, l'emmarchement et l'orientation.
+ */
+function StairList({ plan, levelIndex, onChange, onRemove, onAdd }) {
+  const floorThickness = plan.floorThickness ?? 25
+  const stairs = (plan.stairs || []).filter(st => st.levelFrom === levelIndex)
+  const isTop = levelIndex >= plan.levels.length - 1
+
+  if (isTop && !stairs.length) return null
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-gray-900 flex items-center gap-2 text-sm">
+          <MoveVertical size={16} className="text-blue-600" />
+          Escalier vers le niveau du dessus
+        </h3>
+        {!isTop && !stairs.length && (
+          <button onClick={onAdd} className="text-xs font-semibold text-blue-600">Ajouter</button>
+        )}
+      </div>
+
+      {!stairs.length && (
+        <p className="text-xs text-gray-500 leading-relaxed">
+          Aucun escalier depuis ce niveau. Sans lui, l'étage n'est pas accessible.
+        </p>
+      )}
+
+      {stairs.map(stair => {
+        const rise = (plan.levels[levelIndex]?.ceilingHeight || 250) + floorThickness
+        const geometry = stairGeometry(rise, stair.kind, stair.width)
+        const issues = checkStair(geometry)
+        return (
+          <div key={stair.id} className="space-y-3 pt-1">
+            <div className="grid grid-cols-3 gap-2">
+              <MiniFigure value={geometry.steps} label="marches" />
+              <MiniFigure value={`${geometry.riser} cm`} label="hauteur" />
+              <MiniFigure value={`${geometry.tread} cm`} label="giron" />
+            </div>
+
+            <div className="bg-slate-50 rounded-xl p-3 space-y-1">
+              <Row label="Hauteur à monter" value={`${(rise / 100).toFixed(2).replace('.', ',')} m`} />
+              <Row label="Longueur au sol" value={`${(geometry.run / 100).toFixed(2).replace('.', ',')} m`} />
+              <Row label="Trémie à réserver" value={`${(geometry.wellLength / 100).toFixed(2).replace('.', ',')} × ${(geometry.wellWidth / 100).toFixed(2).replace('.', ',')} m`} />
+              <Row label="Surface au sol perdue" value={`${geometry.footprint.toFixed(1).replace('.', ',')} m²`} />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 mb-1.5">Forme</label>
+              <div className="grid grid-cols-3 gap-2">
+                {STAIR_KINDS.map(kind => (
+                  <button
+                    key={kind.id}
+                    onClick={() => onChange(stair.id, { kind: kind.id })}
+                    className={`p-2 rounded-xl border-2 ${
+                      stair.kind === kind.id ? 'border-blue-500 bg-blue-50' : 'border-gray-100'
+                    }`}
+                  >
+                    <p className="text-base">{kind.icon}</p>
+                    <p className="text-[10px] font-medium text-gray-700 leading-tight">{kind.label}</p>
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-gray-500 mt-1.5 leading-relaxed">
+                {STAIR_KINDS.find(k => k.id === stair.kind)?.note}
+              </p>
+            </div>
+
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <NumberField
+                  label="Emmarchement"
+                  value={stair.width}
+                  unit="cm"
+                  onChange={v => onChange(stair.id, { width: Math.max(60, Math.min(160, parseInt(v, 10) || 90)) })}
+                />
+              </div>
+              <button
+                onClick={() => onChange(stair.id, { rotation: ((stair.rotation || 0) + 90) % 360 })}
+                className="h-12 px-4 rounded-xl bg-gray-100 flex items-center gap-1.5 text-sm font-semibold text-gray-700"
+              >
+                <RotateCw size={15} />
+                Pivoter
+              </button>
+            </div>
+
+            {issues.map((issue, i) => (
+              <div
+                key={i}
+                className={`rounded-xl p-3 flex gap-2 ${
+                  issue.level === 'error' ? 'bg-red-50' : issue.level === 'warning' ? 'bg-amber-50' : 'bg-blue-50'
+                }`}
+              >
+                {issue.level === 'info'
+                  ? <Info size={14} className="text-blue-600 flex-shrink-0 mt-0.5" />
+                  : <AlertTriangle size={14} className={`flex-shrink-0 mt-0.5 ${issue.level === 'error' ? 'text-red-500' : 'text-amber-500'}`} />}
+                <p className={`text-[11px] leading-relaxed ${
+                  issue.level === 'error' ? 'text-red-700' : issue.level === 'warning' ? 'text-amber-800' : 'text-blue-800'
+                }`}>
+                  {issue.text}
+                </p>
+              </div>
+            ))}
+
+            <button
+              onClick={() => onRemove(stair.id)}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-red-50 text-red-600 text-sm font-semibold"
+            >
+              <Trash2 size={15} />
+              Supprimer l'escalier
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function MiniFigure({ value, label }) {
+  return (
+    <div className="bg-blue-50 rounded-xl py-2 text-center">
+      <p className="text-base font-bold text-blue-800 leading-tight">{value}</p>
+      <p className="text-[10px] text-blue-600">{label}</p>
+    </div>
+  )
 }

@@ -17,6 +17,7 @@ import {
 } from './geometry'
 import { BUILD_STAGES, STAGE_INDEX } from '../data/buildStages'
 import { ITEM_BY_ID } from './electrical'
+import { stairGeometry } from './stairs'
 
 export { BUILD_STAGES, STAGE_INDEX }
 
@@ -41,6 +42,8 @@ export const MATERIALS = {
   porte: '#8B5E3C',
   gaine: '#E0A422',
   evacuation: '#3F7FA6',
+  gardeCorps: '#8A9199',
+  terrasse: '#A8A29C',
 }
 
 /* --------------------------------------------------- primitives de facettes */
@@ -184,16 +187,22 @@ export function wallSpans(wall, openings, height) {
   return spans.filter(s => s.end - s.start > 0.5 && s.z1 - s.z0 > 0.5)
 }
 
-function wallFaces(wall, openings, height, exterior, stage) {
+function wallFaces(wall, openings, height, exterior, stage, baseZ = 0) {
   const len = dist(wall.a, wall.b)
   if (len < 1) return []
   const d = direction(wall.a, wall.b)
   const n = normal2d(wall.a, wall.b)
   const half = wall.thickness / 2
-  const color = exterior ? MATERIALS.mur : wall.kind === 'porteur' ? MATERIALS.murInterieur : MATERIALS.cloison
+  // Un garde-corps ne monte qu'à un mètre : c'est la hauteur réglementaire,
+  // et c'est ce qui distingue une terrasse d'une pièce fermée.
+  const railing = wall.kind === 'garde-corps'
+  const rise = railing ? 100 : height
+  const color = railing
+    ? MATERIALS.gardeCorps
+    : exterior ? MATERIALS.mur : wall.kind === 'porteur' ? MATERIALS.murInterieur : MATERIALS.cloison
 
   const faces = []
-  for (const span of wallSpans(wall, openings, height)) {
+  for (const span of wallSpans(wall, openings, rise)) {
     const p0 = { x: wall.a.x + d.x * span.start, y: wall.a.y + d.y * span.start }
     const p1 = { x: wall.a.x + d.x * span.end, y: wall.a.y + d.y * span.end }
     const quad = [
@@ -202,7 +211,7 @@ function wallFaces(wall, openings, height, exterior, stage) {
       { x: p1.x - n.x * half, y: p1.y - n.y * half },
       { x: p0.x - n.x * half, y: p0.y - n.y * half },
     ]
-    faces.push(...box(quad, span.z0, span.z1, color, 'mur', stage))
+    faces.push(...box(quad, baseZ + span.z0, baseZ + span.z1, color, 'mur', stage))
   }
   return faces
 }
@@ -210,13 +219,13 @@ function wallFaces(wall, openings, height, exterior, stage) {
 /* ------------------------------------------------------------- ouvertures */
 
 /** Vitrage ou vantail, posé au nu intérieur du mur */
-function glazingFaces(opening, wall) {
+function glazingFaces(opening, wall, baseZ = 0) {
   const len = dist(wall.a, wall.b)
   if (len < 1) return []
   const d = direction(wall.a, wall.b)
   const start = Math.max(0, opening.offset - opening.width / 2)
   const end = Math.min(len, opening.offset + opening.width / 2)
-  const z0 = opening.sill || 0
+  const z0 = baseZ + (opening.sill || 0)
   const z1 = z0 + opening.height
   const isDoor = opening.kind === 'porte' || opening.kind === 'porte-entree' || opening.kind === 'porte-garage'
   const color = isDoor ? MATERIALS.porte : MATERIALS.vitrage
@@ -229,13 +238,13 @@ function glazingFaces(opening, wall) {
 }
 
 /** Dormant : le cadre qui ceinture l'ouverture dans l'épaisseur du mur */
-function frameFaces(opening, wall) {
+function frameFaces(opening, wall, baseZ = 0) {
   const len = dist(wall.a, wall.b)
   if (len < 1) return []
   const d = direction(wall.a, wall.b)
   const start = Math.max(0, opening.offset - opening.width / 2)
   const end = Math.min(len, opening.offset + opening.width / 2)
-  const z0 = opening.sill || 0
+  const z0 = baseZ + (opening.sill || 0)
   const z1 = z0 + opening.height
   const at = (t, z) => [wall.a.x + d.x * t, wall.a.y + d.y * t, z]
   const section = 5
@@ -276,7 +285,7 @@ function clearOfOpenings(point, walls, openings) {
  * longs murs. En maçonnerie ce sont les chaînages verticaux, en ossature bois
  * les montants d'angle.
  */
-function columnFaces(walls, exteriorIds, openings, height, structure) {
+function columnFaces(walls, exteriorIds, openings, height, structure, baseZ = 0, stage = 'elevation') {
   const exterior = walls.filter(w => exteriorIds.has(w.id))
   if (!exterior.length) return []
 
@@ -301,23 +310,23 @@ function columnFaces(walls, exteriorIds, openings, height, structure) {
   const faces = []
   for (const p of positions) {
     faces.push(...prism(
-      [p.x, p.y, 0], [p.x, p.y, height],
+      [p.x, p.y, baseZ], [p.x, p.y, baseZ + height],
       side / 2, side / 2, [1, 0, 0],
-      color, 'poteau', 'elevation', 1,
+      color, 'poteau', stage, 1,
     ))
   }
   return faces
 }
 
 /** Ceinture en tête de mur, légèrement débordante pour rester lisible */
-function ringBeamFaces(walls, structure, height) {
+function ringBeamFaces(walls, structure, height, baseZ = 0) {
   const beamHeight = structure === 'ossature-bois' ? 12 : 20
   const color = structure === 'ossature-bois' ? MATERIALS.bois : MATERIALS.beton
   const faces = []
   for (const wall of walls) {
     if (dist(wall.a, wall.b) < 10) continue
     faces.push(...wallBand(
-      wall, height - beamHeight, height, wall.thickness / 2 + 1.5,
+      wall, baseZ + height - beamHeight, baseZ + height, wall.thickness / 2 + 1.5,
       color, 'chainage', 'chainage', 1,
     ))
   }
@@ -325,7 +334,7 @@ function ringBeamFaces(walls, structure, height) {
 }
 
 /** Linteau au-dessus d'une baie, avec ses appuis de part et d'autre */
-function lintelFaces(openings, walls, structure, height) {
+function lintelFaces(openings, walls, structure, height, baseZ = 0) {
   const beamHeight = structure === 'ossature-bois' ? 12 : 20
   const color = structure === 'ossature-bois' ? MATERIALS.bois : MATERIALS.beton
   const faces = []
@@ -343,8 +352,8 @@ function lintelFaces(openings, walls, structure, height) {
     const start = Math.max(0, opening.offset - opening.width / 2 - bearing)
     const end = Math.min(len, opening.offset + opening.width / 2 + bearing)
     faces.push(...prism(
-      [wall.a.x + d.x * start, wall.a.y + d.y * start, top + beamHeight / 2],
-      [wall.a.x + d.x * end, wall.a.y + d.y * end, top + beamHeight / 2],
+      [wall.a.x + d.x * start, wall.a.y + d.y * start, baseZ + top + beamHeight / 2],
+      [wall.a.x + d.x * end, wall.a.y + d.y * end, baseZ + top + beamHeight / 2],
       beamHeight / 2, wall.thickness / 2 + 1, [0, 0, 1],
       color, 'linteau', 'chainage', 1,
     ))
@@ -755,8 +764,14 @@ function roofHeightAt(poly, gables, pitch, eaveZ, x, y) {
  * différence se ferme par un mur vertical, et la ligne de rencontre des deux
  * pans forme la noue.
  */
-function multiWingRoofFaces(contourPoints, roof, eaveZ) {
-  const rects = decomposeRectangles(contourPoints)
+function multiWingRoofFaces(contourPoints, roof, eaveZ, terraces = []) {
+  const all = decomposeRectangles(contourPoints)
+  // Une terrasse est à ciel ouvert : le corps qui la porte ne reçoit pas de toit
+  const rects = all.filter(rect => {
+    const cx = (rect.x0 + rect.x1) / 2
+    const cy = (rect.y0 + rect.y1) / 2
+    return !terraces.some(poly => pointInPolygonXY({ x: cx, y: cy }, poly))
+  })
   if (!rects.length) return []
 
   const over = roof?.overhang || 0
@@ -819,6 +834,20 @@ function multiWingRoofFaces(contourPoints, roof, eaveZ) {
   return faces
 }
 
+/** Appartenance d'un point à un polygone, en coordonnées de plan */
+function pointInPolygonXY(p, points) {
+  let inside = false
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const pi = points[i]
+    const pj = points[j]
+    if ((pi.y > p.y) !== (pj.y > p.y)
+      && p.x < ((pj.x - pi.x) * (p.y - pi.y)) / (pj.y - pi.y) + pi.x) {
+      inside = !inside
+    }
+  }
+  return inside
+}
+
 /** Segment commun à deux rectangles accolés, s'il existe */
 function sharedBoundary(a, b) {
   const overlapY = () => ({
@@ -873,7 +902,7 @@ export function isRectangular(polygon) {
  * volontaire : elle donne le volume et la hauteur au faîtage sans prétendre
  * représenter les noues.
  */
-export function roofFaces(walls, roof, eaveZ, contourPoints = null) {
+export function roofFaces(walls, roof, eaveZ, contourPoints = null, terraces = []) {
   const bb = wallsBoundingBox(walls)
   if (!Number.isFinite(bb.minX)) return []
   const over = roof?.overhang || 0
@@ -881,8 +910,8 @@ export function roofFaces(walls, roof, eaveZ, contourPoints = null) {
   // Emprise non rectangulaire : la toiture est engendrée pan par pan sur le
   // contour réel, avec ses arêtiers et ses noues. Le rectangle englobant ne
   // convient qu'aux emprises qui le remplissent.
-  if (contourPoints && contourPoints.length >= 3 && !isRectangular(contourPoints)) {
-    return multiWingRoofFaces(contourPoints, roof, eaveZ)
+  if (contourPoints && contourPoints.length >= 3 && (!isRectangular(contourPoints) || terraces.length)) {
+    return multiWingRoofFaces(contourPoints, roof, eaveZ, terraces)
   }
   const x0 = bb.minX - over
   const x1 = bb.maxX + over
@@ -975,7 +1004,7 @@ export function roofFaces(walls, roof, eaveZ, contourPoints = null) {
  */
 function networkFaces(networks, plan) {
   const faces = []
-  const height = plan.ceilingHeight || 250
+  const height = plan.levels?.[0]?.ceilingHeight || plan.ceilingHeight || 250
   const MIN_RADIUS = 3
 
   const elec = networks?.electrical
@@ -1054,110 +1083,270 @@ function networkFaces(networks, plan) {
 
 /* --------------------------------------------------------- construction */
 
-/**
- * Assemble toutes les facettes de la maquette.
- *
- * @param {object} plan
- * @param {object} options
- *   exteriorWallIds : identifiants des murs extérieurs
- *   stage           : identifiant de phase, pour n'afficher que le déjà construit
- *   showRoof        : masquer la couverture pour voir l'intérieur
- *   exploded        : soulever la toiture
- *   structure       : true pour afficher poteaux, chaînages et fermes
- */
-export function buildScene(plan, options = {}) {
-  const walls = plan.walls || []
-  const openings = plan.openings || []
-  const height = plan.ceilingHeight || 250
-  const structure = plan.structure || 'parpaing'
-  const showStructure = options.structure !== false
+/* ---------------------------------------------- équipements et escaliers */
+
+/** Encombrements des appareils sanitaires, en cm : largeur, profondeur, hauteur */
+const EQUIPMENT_VOLUMES = {
+  wc: { w: 38, d: 62, h: 42, color: '#F4F4F2', extra: { w: 38, d: 22, h: 82, color: '#EDEDEA' } },
+  douche: { w: 90, d: 90, h: 6, color: '#E4EEF3', extra: { w: 6, d: 90, h: 190, color: '#BBD6E4' } },
+  baignoire: { w: 170, d: 75, h: 55, color: '#F4F4F2' },
+  lavabo: { w: 62, d: 46, h: 22, color: '#F4F4F2', lift: 78 },
+  evier: { w: 100, d: 62, h: 20, color: '#D8DCDE', lift: 70 },
+  'lave-linge': { w: 60, d: 62, h: 85, color: '#E8E8E6' },
+  'lave-vaisselle': { w: 60, d: 62, h: 85, color: '#E8E8E6' },
+  'chauffe-eau': { w: 62, d: 62, h: 165, color: '#DCDEE0' },
+}
+
+/** Volumes simples pour lire l'aménagement d'un niveau depuis la 3D */
+function equipmentFaces(items, baseZ, stage) {
   const faces = []
+  for (const item of items || []) {
+    const spec = EQUIPMENT_VOLUMES[item.type]
+    if (!spec) continue
+    const { x, y } = item.point
+    const z = baseZ + (spec.lift || 0)
+    const quad = [
+      { x: x - spec.w / 2, y: y - spec.d / 2 },
+      { x: x + spec.w / 2, y: y - spec.d / 2 },
+      { x: x + spec.w / 2, y: y + spec.d / 2 },
+      { x: x - spec.w / 2, y: y + spec.d / 2 },
+    ]
+    faces.push(...box(quad, z, z + spec.h, spec.color, 'equipement', stage, 1))
 
-  if (!walls.length) return { faces, bbox: null, contour: null }
+    if (spec.extra) {
+      const e = spec.extra
+      const eq = [
+        { x: x - e.w / 2, y: y - spec.d / 2 },
+        { x: x + e.w / 2, y: y - spec.d / 2 },
+        { x: x + e.w / 2, y: y - spec.d / 2 + e.d },
+        { x: x - e.w / 2, y: y - spec.d / 2 + e.d },
+      ]
+      faces.push(...box(eq, baseZ + spec.h, baseZ + spec.h + e.h, e.color, 'equipement', stage, 1))
+    }
+  }
+  return faces
+}
 
-  const contour = outerContour(walls)
-  const bb = wallsBoundingBox(walls)
-  const exteriorIds = new Set(options.exteriorWallIds || walls.map(w => w.id))
-  const bearingIds = new Set(walls.filter(w => exteriorIds.has(w.id) || w.kind === 'porteur').map(w => w.id))
+/** Volée d'escalier : une marche par boîte, plus le garde-corps */
+function stairFaces(stair, geometry, baseZ, stage) {
+  const faces = []
+  const angle = ((stair.rotation || 0) * Math.PI) / 180
+  const dx = Math.cos(angle)
+  const dy = Math.sin(angle)
+  const nx = -dy
+  const ny = dx
+  const half = geometry.width / 2
+  const origin = stair.point
 
-  // Terrain
-  const pad = 350
-  faces.push(face([
-    [bb.minX - pad, bb.minY - pad, -2], [bb.maxX + pad, bb.minY - pad, -2],
-    [bb.maxX + pad, bb.maxY + pad, -2], [bb.minX - pad, bb.maxY + pad, -2],
-  ], MATERIALS.terrain, 'terrain', 'terrain'))
-
-  // Fondations et soubassement : visibles seulement tant qu'elles ne sont pas
-  // enterrées. Au-delà du dallage, elles sont sous le terrain et les afficher
-  // donnerait un socle fantôme, le tri par profondeur ne pouvant pas les
-  // masquer derrière une facette de terrain aussi vaste.
-  const stageLimit = options.stage ? STAGE_INDEX[options.stage] : null
-  const foundationsVisible = stageLimit !== null && stageLimit !== undefined
-    && stageLimit <= STAGE_INDEX.soubassement
-  if (showStructure && foundationsVisible) {
-    faces.push(...foundationFaces(walls, bearingIds, plan))
+  for (let i = 0; i < geometry.steps; i++) {
+    const from = i * geometry.tread
+    const to = from + geometry.tread
+    const quad = [
+      { x: origin.x + dx * from + nx * half, y: origin.y + dy * from + ny * half },
+      { x: origin.x + dx * to + nx * half, y: origin.y + dy * to + ny * half },
+      { x: origin.x + dx * to - nx * half, y: origin.y + dy * to - ny * half },
+      { x: origin.x + dx * from - nx * half, y: origin.y + dy * from - ny * half },
+    ]
+    const top = baseZ + (i + 1) * geometry.riser
+    faces.push(...box(quad, top - 4, top, MATERIALS.bois, 'marche', stage, 1))
   }
 
-  const showNetworks = !!options.showNetworks && !!options.networks
+  // limons latéraux, qui donnent la lecture de la volée
+  const end = geometry.steps * geometry.tread
+  for (const side of [1, -1]) {
+    const a = [origin.x + nx * half * side, origin.y + ny * half * side, baseZ]
+    const b = [
+      origin.x + dx * end + nx * half * side,
+      origin.y + dy * end + ny * half * side,
+      baseZ + geometry.steps * geometry.riser,
+    ]
+    faces.push(...prism(a, b, 4, 14, [0, 0, 1], MATERIALS.boisClair, 'limon', stage, 1))
+  }
 
-  // Dalle. En mode réseaux elle est retirée : les évacuations passent dessous
-  // et le tri par profondeur les placerait derrière elle.
-  if (contour.points.length >= 3 && !showNetworks) {
+  return faces
+}
+
+/* --------------------------------------------------------- construction */
+
+/**
+ * Assemble toutes les facettes de la maquette, niveau par niveau.
+ *
+ * Chaque niveau est posé à son altitude, obtenue en empilant les hauteurs sous
+ * plafond et les épaisseurs de plancher. La toiture repose sur le dernier
+ * niveau, les fondations portent le premier.
+ *
+ * @param {object} plan plan complet, avec sa pile de niveaux
+ * @param {object} options
+ *   exteriorWallIds : identifiants des murs extérieurs, tous niveaux confondus
+ *   onlyLevel       : n'afficher qu'un seul niveau, pour en voir l'intérieur
+ *   stage           : phase de chantier, pour n'afficher que le déjà construit
+ *   showRoof        : masquer la couverture
+ *   exploded        : soulever la toiture
+ *   structure       : afficher poteaux, chaînages et fermes
+ *   furniture       : afficher les volumes des équipements
+ */
+export function buildScene(plan, options = {}) {
+  // Un plan d'avant les étages n'a pas de pile de niveaux : on le lit quand même
+  const levels = Array.isArray(plan.levels) && plan.levels.length
+    ? plan.levels
+    : (plan.walls?.length
+      ? [{
+        walls: plan.walls,
+        openings: plan.openings || [],
+        equipment: plan.equipment || [],
+        ceilingHeight: plan.ceilingHeight || 250,
+      }]
+      : [])
+  const allWalls = levels.flatMap(l => l.walls || [])
+  if (!allWalls.length) return { faces: [], bbox: null, contour: null }
+
+  const floorThickness = plan.floorThickness ?? 25
+  const structure = plan.structure || 'parpaing'
+  const showStructure = options.structure !== false
+  const showFurniture = options.furniture !== false
+  const showNetworks = !!options.showNetworks && !!options.networks
+  const onlyLevel = Number.isInteger(options.onlyLevel) ? options.onlyLevel : null
+  const stageLimit = options.stage ? STAGE_INDEX[options.stage] : null
+  const stageActive = stageLimit !== null && stageLimit !== undefined
+
+  const elevations = []
+  let cursor = 0
+  for (const level of levels) {
+    elevations.push(cursor)
+    cursor += (level.ceilingHeight || 250) + floorThickness
+  }
+
+  const topIndex = levels.length - 1
+  const bb = wallsBoundingBox(allWalls)
+  const groundContour = outerContour(levels[0].walls || [])
+  const topContour = outerContour(levels[topIndex].walls || [])
+  const exteriorIds = new Set(options.exteriorWallIds || allWalls.map(w => w.id))
+  const visible = (i) => onlyLevel === null || onlyLevel === i
+
+  const faces = []
+
+  // Terrain
+  if (onlyLevel === null || onlyLevel === 0) {
+    const pad = 350
+    faces.push(face([
+      [bb.minX - pad, bb.minY - pad, -2], [bb.maxX + pad, bb.minY - pad, -2],
+      [bb.maxX + pad, bb.maxY + pad, -2], [bb.minX - pad, bb.maxY + pad, -2],
+    ], MATERIALS.terrain, 'terrain', 'terrain'))
+  }
+
+  // Fondations : visibles tant qu'elles ne sont pas enterrées
+  const foundationsVisible = stageActive && stageLimit <= STAGE_INDEX.soubassement
+  if (showStructure && foundationsVisible && visible(0)) {
+    const bearingIds = new Set((levels[0].walls || [])
+      .filter(w => exteriorIds.has(w.id) || w.kind === 'porteur').map(w => w.id))
+    faces.push(...foundationFaces(levels[0].walls || [], bearingIds, plan))
+  }
+
+  // Dalle basse
+  if (visible(0) && groundContour.points.length >= 3 && !showNetworks) {
     const slabThickness = plan.slab?.thickness || 15
     faces.push(...box(
-      contour.points.map(p => ({ x: p.x, y: p.y })),
+      groundContour.points.map(p => ({ x: p.x, y: p.y })),
       -slabThickness, 0, MATERIALS.dalle, 'dalle', 'dalle',
     ))
   }
 
-  // Murs : les cloisons arrivent en fin de chantier, et restent absentes en
-  // mode réseaux puisque les gaines les traversent avant leur fermeture.
-  for (const wall of walls) {
-    const exterior = exteriorIds.has(wall.id)
-    const partition = !exterior && wall.kind !== 'porteur'
-    if (partition && showNetworks) continue
-    faces.push(...wallFaces(wall, openings, height, exterior, partition ? 'cloisons' : 'elevation'))
+  /* -------------------------------- niveau par niveau -------------------------------- */
+
+  for (let i = 0; i < levels.length; i++) {
+    if (!visible(i)) continue
+    const level = levels[i]
+    const baseZ = elevations[i]
+    const height = level.ceilingHeight || 250
+    const walls = level.walls || []
+    const openings = level.openings || []
+    if (!walls.length) continue
+
+    // Plancher porteur de ce niveau
+    if (i > 0 && !showNetworks) {
+      const contour = outerContour(walls)
+      if (contour.points.length >= 3) {
+        faces.push(...box(
+          contour.points.map(p => ({ x: p.x, y: p.y })),
+          baseZ - floorThickness, baseZ, MATERIALS.dalle, 'plancher', 'elevation',
+        ))
+      }
+    }
+
+    // Murs. Les cloisons arrivent en fin de chantier et s'effacent en mode réseaux.
+    for (const wall of walls) {
+      const exterior = exteriorIds.has(wall.id)
+      const partition = !exterior && wall.kind !== 'porteur'
+      if (partition && showNetworks) continue
+      faces.push(...wallFaces(
+        wall, openings, height, exterior,
+        partition ? 'cloisons' : 'elevation', baseZ,
+      ))
+    }
+
+    if (showStructure) {
+      faces.push(...columnFaces(walls, exteriorIds, openings, height, structure, baseZ))
+      const bearing = walls.filter(w => exteriorIds.has(w.id) || w.kind === 'porteur')
+      faces.push(...ringBeamFaces(bearing, structure, height, baseZ))
+      faces.push(...lintelFaces(openings, walls, structure, height, baseZ))
+    }
+
+    for (const opening of openings) {
+      const wall = walls.find(w => w.id === opening.wallId)
+      if (!wall) continue
+      faces.push(...glazingFaces(opening, wall, baseZ))
+      if (showStructure) faces.push(...frameFaces(opening, wall, baseZ))
+    }
+
+    if (showFurniture && !showNetworks) {
+      faces.push(...equipmentFaces(level.equipment, baseZ, 'cloisons'))
+    }
+  }
+
+  /* ------------------------------------ escaliers ------------------------------------ */
+
+  for (const stair of plan.stairs || []) {
+    const from = stair.levelFrom ?? 0
+    if (from >= levels.length - 1) continue
+    if (onlyLevel !== null && onlyLevel !== from) continue
+    const rise = (levels[from].ceilingHeight || 250) + floorThickness
+    const geometry = stairGeometry(rise, stair.kind, stair.width)
+    faces.push(...stairFaces(stair, geometry, elevations[from], 'cloisons'))
+  }
+
+  /* --------------------------- charpente et couverture --------------------------- */
+
+  const topLevel = levels[topIndex]
+  const eaveZ = elevations[topIndex] + (topLevel.ceilingHeight || 250)
+  const lift = options.exploded ? 150 : 0
+  // Isoler un niveau n'a d'intérêt que pour en voir l'intérieur : la toiture
+  // et le plancher supérieur s'effacent d'eux-mêmes.
+  const roofHidden = options.showRoof === false || onlyLevel !== null
+  const showTop = onlyLevel === null || onlyLevel === topIndex
+  const duringFraming = stageActive
+    && stageLimit >= STAGE_INDEX.charpente
+    && stageLimit < STAGE_INDEX.couverture
+
+  const wantsFraming = onlyLevel === null
+    && (options.showRoof === false || options.exploded || duringFraming)
+  if (showTop && showStructure && !showNetworks && wantsFraming) {
+    faces.push(...trussFaces(topLevel.walls || [], plan.roof, eaveZ, topContour.points))
+  }
+
+  if (showTop && !roofHidden) {
+    faces.push(...roofFaces(
+      topLevel.walls || [], plan.roof, eaveZ + lift, topContour.points,
+      options.terraces || [],
+    ))
   }
 
   if (showNetworks) faces.push(...networkFaces(options.networks, plan))
 
-  // Poteaux, chaînage et linteaux
-  if (showStructure) {
-    faces.push(...columnFaces(walls, exteriorIds, openings, height, structure))
-    faces.push(...ringBeamFaces(walls.filter(w => bearingIds.has(w.id)), structure, height))
-    faces.push(...lintelFaces(openings, walls, structure, height))
-  }
-
-  // Charpente : on la montre quand la couverture est retirée ou soulevée,
-  // c'est-à-dire exactement quand on cherche à la voir.
-  const lift = options.exploded ? 150 : 0
-  const roofHidden = options.showRoof === false
-  const stageActive = stageLimit !== null && stageLimit !== undefined
-  const duringFraming = stageActive
-    && stageLimit >= STAGE_INDEX.charpente
-    && stageLimit < STAGE_INDEX.couverture
-  if (showStructure && !showNetworks && (roofHidden || options.exploded || duringFraming)) {
-    faces.push(...trussFaces(walls, plan.roof, height, contour.points))
-  }
-
-  // Couverture
-  if (options.showRoof !== false) {
-    faces.push(...roofFaces(walls, plan.roof, height + lift, contour.points))
-  }
-
-  // Menuiseries
-  for (const opening of openings) {
-    const wall = walls.find(w => w.id === opening.wallId)
-    if (!wall) continue
-    faces.push(...glazingFaces(opening, wall))
-    if (showStructure) faces.push(...frameFaces(opening, wall))
-  }
-
-  const visible = stageLimit === null || stageLimit === undefined
+  const shown = !stageActive
     ? faces
     : faces.filter(f => (STAGE_INDEX[f.stage] ?? 0) <= stageLimit)
 
-  return { faces: visible, allFaces: faces, bbox: bb, contour }
+  return { faces: shown, allFaces: faces, bbox: bb, contour: groundContour, elevations }
 }
 
 /* ------------------------------------------------------------ caméra */
@@ -1368,11 +1557,20 @@ export function shade(hex, amount) {
 
 /** Hauteur au faîtage, utile pour vérifier les règles d'urbanisme */
 export function ridgeHeight(plan) {
-  const walls = plan.walls || []
+  const levels = plan.levels || []
+  const floorThickness = plan.floorThickness ?? 25
+  const walls = levels.length ? (levels[levels.length - 1].walls || []) : (plan.walls || [])
+  // hauteur cumulée des niveaux jusqu'à l'égout du dernier
+  let stack = 0
+  for (let i = 0; i < levels.length - 1; i++) {
+    stack += (levels[i].ceilingHeight || 250) + floorThickness
+  }
   const bb = wallsBoundingBox(walls)
   if (!Number.isFinite(bb.minX)) return 0
   const roof = plan.roof || {}
-  const ceiling = plan.ceilingHeight || 250
+  const ceiling = stack + (levels.length
+    ? (levels[levels.length - 1].ceilingHeight || 250)
+    : (plan.ceilingHeight || 250))
   if (roof.kind === 'plat') return ceiling + 25
 
   const pitch = ((roof.pitch ?? 35) * Math.PI) / 180

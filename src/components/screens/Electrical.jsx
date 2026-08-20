@@ -7,7 +7,7 @@ import {
 import Header from '../layout/Header'
 import PlanCanvas from '../plan/PlanCanvas'
 import { useApp } from '../../contexts/AppContext'
-import { computeSurfaces } from '../../lib/metre'
+import { computeSurfaces, levelPlan } from '../../lib/metre'
 import {
   computeElectrical, ELECTRICAL_ITEMS, ITEM_BY_ID, suggestedItems,
   MOUNTING_HEIGHTS, CABLE_SECTIONS,
@@ -16,19 +16,24 @@ import { pointInPolygon } from '../../lib/geometry'
 
 export default function Electrical() {
   const navigate = useNavigate()
-  const { activePlan, updatePlan } = useApp()
+  const { activePlan, updatePlan, updateLevel } = useApp()
   const canvasRef = useRef(null)
   const plan = activePlan
+  const [levelIndex, setLevelIndex] = useState(0)
+  const safeLevel = Math.min(levelIndex, plan.levels.length - 1)
+  const level = plan.levels[safeLevel]
+  const view = useMemo(() => levelPlan(plan, safeLevel), [plan, safeLevel])
+  const setLevelData = (patch) => updateLevel(safeLevel, patch)
 
   const [pendingType, setPendingType] = useState(null)
   const [selected, setSelected] = useState(null)
   const [activeHandleId, setActiveHandleId] = useState(null)
   const [tab, setTab] = useState('conformite')
 
-  const surfaces = useMemo(() => computeSurfaces(plan), [plan])
-  const install = useMemo(() => computeElectrical(plan, surfaces), [plan, surfaces])
+  const surfaces = useMemo(() => computeSurfaces(view), [view])
+  const install = useMemo(() => computeElectrical(view, surfaces), [view, surfaces])
 
-  if (!(plan.walls || []).length) {
+  if (!(level.walls || []).length) {
     return (
       <div className="pb-24 min-h-screen bg-slate-50">
         <Header title="Électricité" back />
@@ -47,11 +52,11 @@ export default function Electrical() {
   const handleTap = (world) => {
     if (pendingType) {
       const room = surfaces.rooms.find(r => pointInPolygon(world, r.points))
-      const existing = plan.electrical || []
+      const existing = level.electrical || []
       const next = pendingType === 'tableau'
-        ? existing.filter(d => d.type !== 'tableau') // un seul tableau
+        ? existing.filter(d => d.type !== 'tableau') // un seul tableau par niveau
         : existing
-      updatePlan({
+      setLevelData({
         electrical: [...next, {
           id: `el${Date.now().toString(36)}`,
           type: pendingType,
@@ -62,17 +67,17 @@ export default function Electrical() {
       setPendingType(null)
       return
     }
-    const hit = (plan.electrical || []).find(d => Math.hypot(d.point.x - world.x, d.point.y - world.y) < 40)
+    const hit = (level.electrical || []).find(d => Math.hypot(d.point.x - world.x, d.point.y - world.y) < 40)
     setSelected(hit || null)
   }
 
   /* --------------------------- déplacement de l'appareillage au doigt */
 
   const handles = useMemo(
-    () => (pendingType ? [] : (plan.electrical || []).map(d => ({
+    () => (pendingType ? [] : (level.electrical || []).map(d => ({
       id: `el:${d.id}`, kind: 'device', deviceId: d.id, point: d.point,
     }))),
-    [plan.electrical, pendingType],
+    [level.electrical, pendingType],
   )
 
   const pickHandle = (world, tolerance) => {
@@ -87,19 +92,19 @@ export default function Electrical() {
 
   const applyDrag = (handle, world) => {
     const point = { x: Math.round(world.x / 5) * 5, y: Math.round(world.y / 5) * 5 }
-    updatePlan({
-      electrical: (plan.electrical || []).map(d => (d.id === handle.deviceId ? { ...d, point } : d)),
+    setLevelData({
+      electrical: (level.electrical || []).map(d => (d.id === handle.deviceId ? { ...d, point } : d)),
     })
   }
 
   const endDrag = (handle, world, moved) => {
     setActiveHandleId(null)
     if (moved) return
-    setSelected((plan.electrical || []).find(d => d.id === handle.deviceId) || null)
+    setSelected((level.electrical || []).find(d => d.id === handle.deviceId) || null)
   }
 
   const removeDevice = (id) => {
-    updatePlan({ electrical: (plan.electrical || []).filter(d => d.id !== id) })
+    setLevelData({ electrical: (level.electrical || []).filter(d => d.id !== id) })
     setSelected(null)
   }
 
@@ -119,9 +124,9 @@ export default function Electrical() {
       <div className="relative bg-white border-b border-gray-100">
         <PlanCanvas
           ref={canvasRef}
-          walls={plan.walls}
+          walls={level.walls}
           rooms={surfaces.rooms}
-          openings={plan.openings || []}
+          openings={level.openings || []}
           electrical={canvasItems}
           routes={install.routes}
           showDimensions={false}

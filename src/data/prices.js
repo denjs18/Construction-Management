@@ -66,6 +66,27 @@ export const PRICE_ITEMS = [
     { note: "Nécessaire pour noyer les gaines et rattraper les niveaux avant revêtement." }),
 
   /* -------------------------------------------------------- Élévation murs */
+  /* --------------------------------------------- Planchers et escaliers */
+  item('plancher-intermediaire', 'gros-oeuvre', 'Plancher intermédiaire (poutrelles-hourdis)', 'm²',
+    [42, 58, 78], [38, 55, 78], 0.9,
+    { note: "Poutrelles, entrevous et dalle de compression ferraillée. La portée des poutrelles commande la position des refends : au-delà de 5 à 6 m, il faut un mur porteur intermédiaire ou une poutre." }),
+
+  item('escalier', 'menuiseries', 'Escalier d\'étage', 'u',
+    [750, 1800, 4200], [350, 700, 1300], 14,
+    { note: "Un escalier droit en bois est le plus simple à poser soi-même. Un quart tournant, ou un béton coulé en place, demande un vrai savoir-faire." }),
+
+  item('garde-corps', 'menuiseries', 'Garde-corps de terrasse ou de trémie', 'ml',
+    [65, 130, 260], [55, 95, 160], 1.2,
+    { note: "Un mètre de hauteur minimum, et un remplissage tel qu'une sphère de 11 cm ne passe pas. C'est une obligation de sécurité, pas une option." }),
+
+  item('etancheite-terrasse', 'gros-oeuvre', 'Étanchéité de terrasse accessible', 'm²',
+    [24, 40, 62], [42, 68, 105], 0.9,
+    { diy: false, note: "Membrane bitumineuse ou EPDM avec relevés en périphérie. Une terrasse au-dessus d'une pièce de vie ne se rattrape pas : ce poste se confie à un étancheur." }),
+
+  item('dalle-sur-plots', 'sols', 'Dalles sur plots', 'm²',
+    [28, 48, 85], [18, 30, 48], 0.5,
+    { note: "Se posent sur l'étanchéité sans la percer, et se démontent pour inspection." }),
+
   item('mur-parpaing', 'gros-oeuvre', 'Élévation murs — parpaing 20 cm', 'm²',
     [20, 27, 36], [46, 62, 82], 1.1,
     { note: "Blocs creux 20×20×50 + mortier. Le plus économique et le plus tolérant pour un débutant." }),
@@ -316,6 +337,9 @@ export const ROOM_TYPES = [
   { id: 'buanderie', label: 'Buanderie', icon: '🧺', floor: 'carrelage-sol', wet: true },
   { id: 'garage', label: 'Garage', icon: '🚗', floor: null, wet: false },
   { id: 'cellier', label: 'Cellier', icon: '📦', floor: 'carrelage-sol', wet: false },
+  { id: 'dressing', label: 'Dressing', icon: '👔', floor: 'parquet-flottant', wet: false },
+  { id: 'palier', label: 'Palier', icon: '🪜', floor: 'parquet-flottant', wet: false },
+  { id: 'terrasse', label: 'Terrasse', icon: '🌤️', floor: 'dalle-sur-plots', wet: false, outdoor: true },
   { id: 'autre', label: 'Autre', icon: '⬜', floor: 'carrelage-sol', wet: false },
 ]
 

@@ -7,7 +7,7 @@ import {
 import Header from '../layout/Header'
 import PlanCanvas from '../plan/PlanCanvas'
 import { useApp } from '../../contexts/AppContext'
-import { computeSurfaces } from '../../lib/metre'
+import { computeSurfaces, levelPlan } from '../../lib/metre'
 import {
   computePlumbing, EQUIPMENT_TYPES, EQUIPMENT_BY_ID, suggestedEquipment,
   DEFAULT_SLOPE, SLOPE_LIMITS, formatRun,
@@ -16,19 +16,24 @@ import { pointInPolygon } from '../../lib/geometry'
 
 export default function Plumbing() {
   const navigate = useNavigate()
-  const { activePlan, updatePlan } = useApp()
+  const { activePlan, updatePlan, updateLevel } = useApp()
   const canvasRef = useRef(null)
   const plan = activePlan
+  const [levelIndex, setLevelIndex] = useState(0)
+  const safeLevel = Math.min(levelIndex, plan.levels.length - 1)
+  const level = plan.levels[safeLevel]
+  const view = useMemo(() => levelPlan(plan, safeLevel), [plan, safeLevel])
+  const setLevelData = (patch) => updateLevel(safeLevel, patch)
 
   const [mode, setMode] = useState('view') // view | add | exit
   const [pendingType, setPendingType] = useState(null)
   const [selected, setSelected] = useState(null)
   const [activeHandleId, setActiveHandleId] = useState(null)
 
-  const surfaces = useMemo(() => computeSurfaces(plan), [plan])
-  const network = useMemo(() => computePlumbing(plan, surfaces), [plan, surfaces])
+  const surfaces = useMemo(() => computeSurfaces(view), [view])
+  const network = useMemo(() => computePlumbing(view, surfaces), [view, surfaces])
 
-  const hasPlan = (plan.walls || []).length > 0
+  const hasPlan = (level.walls || []).length > 0
 
   if (!hasPlan) {
     return (
@@ -61,14 +66,14 @@ export default function Plumbing() {
         point: { x: Math.round(world.x), y: Math.round(world.y) },
         roomId: room?.id || null,
       }
-      updatePlan({ equipment: [...(plan.equipment || []), item] })
+      setLevelData({ equipment: [...(level.equipment || []), item] })
       setMode('view')
       setPendingType(null)
       return
     }
 
     // sélection d'un appareil existant
-    const hit = (plan.equipment || []).find(e => Math.hypot(e.point.x - world.x, e.point.y - world.y) < 45)
+    const hit = (level.equipment || []).find(e => Math.hypot(e.point.x - world.x, e.point.y - world.y) < 45)
     setSelected(hit || null)
   }
 
@@ -76,14 +81,14 @@ export default function Plumbing() {
 
   const handles = useMemo(() => {
     if (mode !== 'view') return []
-    const list = (plan.equipment || []).map(e => ({
+    const list = (level.equipment || []).map(e => ({
       id: `eq:${e.id}`, kind: 'equipment', equipmentId: e.id, point: e.point,
     }))
     if (network.exit) {
       list.push({ id: 'exit', kind: 'exit', point: network.exit })
     }
     return list
-  }, [plan.equipment, network.exit, mode])
+  }, [level.equipment, network.exit, mode])
 
   const pickHandle = (world, tolerance) => {
     if (mode !== 'view') return null
@@ -101,19 +106,19 @@ export default function Plumbing() {
       updatePlan({ plumbing: { ...(plan.plumbing || {}), exit: point } })
       return
     }
-    updatePlan({
-      equipment: (plan.equipment || []).map(e => (e.id === handle.equipmentId ? { ...e, point } : e)),
+    setLevelData({
+      equipment: (level.equipment || []).map(e => (e.id === handle.equipmentId ? { ...e, point } : e)),
     })
   }
 
   const endDrag = (handle, world, moved) => {
     setActiveHandleId(null)
     if (moved || handle.kind === 'exit') return
-    setSelected((plan.equipment || []).find(e => e.id === handle.equipmentId) || null)
+    setSelected((level.equipment || []).find(e => e.id === handle.equipmentId) || null)
   }
 
   const removeEquipment = (id) => {
-    updatePlan({ equipment: (plan.equipment || []).filter(e => e.id !== id) })
+    setLevelData({ equipment: (level.equipment || []).filter(e => e.id !== id) })
     setSelected(null)
   }
 
@@ -139,9 +144,9 @@ export default function Plumbing() {
       <div className="relative bg-white border-b border-gray-100">
         <PlanCanvas
           ref={canvasRef}
-          walls={plan.walls}
+          walls={level.walls}
           rooms={surfaces.rooms}
-          openings={plan.openings || []}
+          openings={level.openings || []}
           equipment={canvasEquipment}
           routes={network.routes}
           reservations={network.reservations}

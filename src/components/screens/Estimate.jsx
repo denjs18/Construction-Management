@@ -28,7 +28,7 @@ export default function Estimate() {
 
   const plan = activePlan
   const estimate = useMemo(() => computeEstimate(plan), [plan])
-  const hasPlan = (plan.walls || []).length > 0
+  const hasPlan = (plan.levels || []).some(l => (l.walls || []).length > 0)
 
   if (!hasPlan) {
     return (
@@ -79,7 +79,8 @@ export default function Estimate() {
         <p className="text-blue-200 text-sm">Coût estimé du projet</p>
         <p className="text-4xl font-bold mt-1">{formatEuro(estimate.total)}</p>
         <p className="text-blue-200 text-sm mt-1">
-          soit {formatEuro(estimate.pricePerM2)} / m² sur {estimate.surfaces.floorArea.toFixed(1).replace('.', ',')} m² habitables
+          soit {formatEuro(estimate.pricePerM2)} / m² sur {estimate.building.floorArea.toFixed(1).replace('.', ',')} m² habitables
+          {estimate.building.levelCount > 1 && ` répartis sur ${estimate.building.levelCount} niveaux`}
         </p>
 
         <div className="grid grid-cols-2 gap-2 mt-4">

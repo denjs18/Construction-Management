@@ -293,6 +293,14 @@ export function AppProvider({ children }) {
     dispatch({ type: 'UPDATE_PLAN', payload: { projectId: activeProject.id, plan: patch } })
   }
 
+  /** Modifie un seul niveau du plan sans toucher aux autres */
+  const updateLevel = (index, patch) => {
+    if (!activePlan) return
+    updatePlan({
+      levels: activePlan.levels.map((level, i) => (i === index ? { ...level, ...patch } : level)),
+    })
+  }
+
   const getProjectProgress = (project) => {
     if (!project) return 0
     const { total, done } = countTasks(project)
@@ -319,7 +327,7 @@ export function AppProvider({ children }) {
   }
 
   return (
-    <AppContext.Provider value={{ state, dispatch, activeProject, activePlan, updatePlan, getProjectProgress, getTotalSpent, getNextTasks }}>
+    <AppContext.Provider value={{ state, dispatch, activeProject, activePlan, updatePlan, updateLevel, getProjectProgress, getTotalSpent, getNextTasks }}>
       {children}
     </AppContext.Provider>
   )
