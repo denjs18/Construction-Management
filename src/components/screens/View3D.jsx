@@ -324,11 +324,12 @@ export default function View3D() {
         </div>
 
         {irregular && (
-          <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4">
-            <p className="text-xs text-amber-800 leading-relaxed">
-              Votre emprise n'est pas rectangulaire. Les murs et les surfaces sont exacts, mais la
-              toiture est représentée de façon simplifiée sur le rectangle englobant : elle ne
-              montre pas les noues ni les décrochés.
+          <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4">
+            <p className="text-xs text-blue-800 leading-relaxed">
+              Votre emprise n'est pas rectangulaire : elle est découpée en corps de bâtiment, et
+              chaque aile reçoit sa propre toiture. Les noues, ces lignes de rencontre entre deux
+              pans où l'eau se concentre, apparaissent là où les corps se rejoignent. Soignez-les
+              particulièrement : c'est le point d'entrée d'eau le plus fréquent d'une toiture.
             </p>
           </div>
         )}

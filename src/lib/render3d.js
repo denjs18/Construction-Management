@@ -387,112 +387,480 @@ function foundationFaces(walls, bearingIds, plan) {
 /* -------------------------------------------------------------- charpente */
 
 /**
- * Fermes industrielles simplifiées : entrait, arbalétriers, poinçon et fiches.
- * On garde six membrures par ferme, assez pour lire la structure sans faire
- * exploser le nombre de facettes.
- */
-/**
- * Étendue du bâtiment en travers, à une position donnée le long du faîtage.
- * Renvoie null si la ligne ne traverse pas l'emprise.
- */
-function crossExtent(points, run, alongX) {
-  if (!points || points.length < 3) return null
-  const hits = []
-  for (let i = 0; i < points.length; i++) {
-    const a = points[i]
-    const b = points[(i + 1) % points.length]
-    const a1 = alongX ? a.x : a.y
-    const b1 = alongX ? b.x : b.y
-    if (Math.abs(b1 - a1) < 1e-6) continue
-    if ((a1 - run) * (b1 - run) > 0) continue
-    const t = (run - a1) / (b1 - a1)
-    hits.push(alongX ? a.y + (b.y - a.y) * t : a.x + (b.x - a.x) * t)
-  }
-  if (hits.length < 2) return null
-  return { min: Math.min(...hits), max: Math.max(...hits) }
-}
-
-/**
  * Fermes industrielles simplifiées : entrait, rampants, poinçon et fiches.
  *
- * Chaque ferme est découpée sur l'emprise réelle du bâtiment à sa position :
- * sur une maison en L, celles qui surplombent le creux sont raccourcies ou
- * supprimées au lieu de flotter dans le vide. Le faîtage reste horizontal,
- * comme sur un vrai toit.
+ * La charpente suit le même découpage que la toiture : chaque corps de bâtiment
+ * reçoit la sienne, portée par ses propres murs. Sur une maison en L, les deux
+ * ailes ont donc chacune leur faîtage, à leur hauteur propre.
  */
 function trussFaces(walls, roof, height, contourPoints) {
-  const bb = wallsBoundingBox(walls)
-  if (!Number.isFinite(bb.minX)) return []
   if (roof?.kind === 'plat') return []
-
-  const alongX = bb.width >= bb.height
-  const span = alongX ? bb.height : bb.width
-  const runFrom = alongX ? bb.minX : bb.minY
-  const runTo = alongX ? bb.maxX : bb.maxY
-  const runLength = runTo - runFrom
-  const crossCentre = alongX ? (bb.minY + bb.maxY) / 2 : (bb.minX + bb.maxX) / 2
+  const rects = contourPoints && contourPoints.length >= 3
+    ? decomposeRectangles(contourPoints)
+    : []
+  if (!rects.length) return []
 
   const pitch = ((roof?.pitch ?? 35) * Math.PI) / 180
   const slope = Math.tan(pitch)
-  const rise = (span / 2) * slope
-  const ridgeZ = height + rise
-  const zRoof = (u) => ridgeZ - Math.abs(u) * slope
-
-  const MAX_TRUSSES = 34
-  let count = Math.max(2, Math.round(runLength / 60) + 1)
-  if (count > MAX_TRUSSES) count = MAX_TRUSSES
-  const step = runLength / (count - 1)
-
   const sectionW = 4
   const sectionH = 10
   const faces = []
-  let ridgeMin = null
-  let ridgeMax = null
 
-  for (let i = 0; i < count; i++) {
-    const run = runFrom + step * i
-    // On sonde légèrement en retrait aux extrémités, sinon la ligne rase le mur
-    const probe = Math.min(Math.max(run, runFrom + 1), runTo - 1)
-    const extent = crossExtent(contourPoints, probe, alongX)
-    if (!extent) continue
+  // On répartit un budget global de fermes entre les corps, au prorata
+  const totalRun = rects.reduce((s, r) => s + Math.max(r.x1 - r.x0, r.y1 - r.y0), 0)
+  const MAX_TRUSSES = 40
 
-    let left = extent.min - crossCentre
-    let right = extent.max - crossCentre
-    if (right - left < 100) continue // moins d'un mètre : rien à porter
+  for (const rect of rects) {
+    const width = rect.x1 - rect.x0
+    const depth = rect.y1 - rect.y0
+    const alongX = width >= depth
+    const span = Math.min(width, depth)
+    const runFrom = alongX ? rect.x0 : rect.y0
+    const runTo = alongX ? rect.x1 : rect.y1
+    const runLength = runTo - runFrom
+    const crossCentre = alongX ? (rect.y0 + rect.y1) / 2 : (rect.x0 + rect.x1) / 2
+    const rise = (span / 2) * slope
+    const ridgeZ = height + rise
 
-    left = Math.max(left, -span / 2)
-    right = Math.min(right, span / 2)
+    let count = Math.max(2, Math.round(runLength / 60) + 1)
+    const budget = Math.max(3, Math.round((MAX_TRUSSES * runLength) / (totalRun || 1)))
+    if (count > budget) count = budget
+    const step = runLength / (count - 1)
 
-    const at = (u, z) => (alongX ? [run, crossCentre + u, z] : [crossCentre + u, run, z])
+    const left = -span / 2
+    const right = span / 2
     const runAxis = alongX ? [1, 0, 0] : [0, 1, 0]
-    const member = (u1, z1, u2, z2) => prism(
-      at(u1, z1), at(u2, z2), sectionW / 2, sectionH / 2, runAxis,
-      MATERIALS.bois, 'ferme', 'charpente', 1,
-    )
 
-    faces.push(...member(left, height, right, height))
-
-    if (left < 0) faces.push(...member(left, zRoof(left), Math.min(right, 0), zRoof(Math.min(right, 0))))
-    if (right > 0) faces.push(...member(Math.max(left, 0), zRoof(Math.max(left, 0)), right, zRoof(right)))
-
-    const spansRidge = left < -1 && right > 1
-    if (spansRidge) {
+    for (let i = 0; i < count; i++) {
+      const run = runFrom + step * i
+      const at = (u, z) => (alongX ? [run, crossCentre + u, z] : [crossCentre + u, run, z])
+      const member = (u1, z1, u2, z2) => prism(
+        at(u1, z1), at(u2, z2), sectionW / 2, sectionH / 2, runAxis,
+        MATERIALS.bois, 'ferme', 'charpente', 1,
+      )
+      faces.push(...member(left, height, right, height))
+      faces.push(...member(left, height, 0, ridgeZ))
+      faces.push(...member(right, height, 0, ridgeZ))
       faces.push(...member(0, height, 0, ridgeZ))
-      faces.push(...member(left / 2, height, left / 2, zRoof(left / 2)))
-      faces.push(...member(right / 2, height, right / 2, zRoof(right / 2)))
-      if (ridgeMin === null || run < ridgeMin) ridgeMin = run
-      if (ridgeMax === null || run > ridgeMax) ridgeMax = run
+      faces.push(...member(left / 2, height, left / 2, height + rise / 2))
+      faces.push(...member(right / 2, height, right / 2, height + rise / 2))
     }
-  }
 
-  // panne faîtière, limitée à la portion réellement surmontée d'un faîtage
-  if (ridgeMin !== null && ridgeMax !== null && ridgeMax - ridgeMin > 10) {
-    const a = alongX ? [ridgeMin, crossCentre, ridgeZ] : [crossCentre, ridgeMin, ridgeZ]
-    const b = alongX ? [ridgeMax, crossCentre, ridgeZ] : [crossCentre, ridgeMax, ridgeZ]
+    const a = alongX ? [runFrom, crossCentre, ridgeZ] : [crossCentre, runFrom, ridgeZ]
+    const b = alongX ? [runTo, crossCentre, ridgeZ] : [crossCentre, runTo, ridgeZ]
     faces.push(...prism(a, b, 5, 7, [0, 0, 1], MATERIALS.boisClair, 'panne', 'charpente', 1))
   }
 
   return faces
+}
+
+/* ----------------------------------------------- géométrie de la toiture */
+
+/**
+ * Décale un polygone vers l'extérieur d'une distance constante.
+ * Chaque sommet devient l'intersection des deux arêtes adjacentes décalées,
+ * ce qui conserve les angles — indispensable pour un débord de toiture.
+ */
+function offsetPolygon(points, distance) {
+  const n = points.length
+  if (n < 3 || distance === 0) return points.map(p => ({ ...p }))
+
+  let shoelace = 0
+  for (let i = 0; i < n; i++) {
+    const p = points[i]
+    const q = points[(i + 1) % n]
+    shoelace += p.x * q.y - q.x * p.y
+  }
+  const ccw = shoelace > 0
+
+  const lines = points.map((p, i) => {
+    const q = points[(i + 1) % n]
+    const ex = q.x - p.x
+    const ey = q.y - p.y
+    const len = Math.hypot(ex, ey) || 1
+    // normale extérieure
+    const nx = ccw ? ey / len : -ey / len
+    const ny = ccw ? -ex / len : ex / len
+    return { nx, ny, c: nx * p.x + ny * p.y + distance }
+  })
+
+  const result = []
+  for (let i = 0; i < n; i++) {
+    const previous = lines[(i - 1 + n) % n]
+    const current = lines[i]
+    const det = previous.nx * current.ny - previous.ny * current.nx
+    if (Math.abs(det) < 1e-9) {
+      result.push({
+        x: points[i].x + current.nx * distance,
+        y: points[i].y + current.ny * distance,
+      })
+      continue
+    }
+    result.push({
+      x: (previous.c * current.ny - current.c * previous.ny) / det,
+      y: (previous.nx * current.c - current.nx * previous.c) / det,
+    })
+  }
+  return result
+}
+
+/** Coupe un polygone convexe par le demi-plan ax·x + ay·y ≤ ac */
+function clipHalfPlane(polygon, ax, ay, ac) {
+  const inside = (p) => ax * p.x + ay * p.y - ac <= 1e-7
+  const out = []
+  for (let i = 0; i < polygon.length; i++) {
+    const current = polygon[i]
+    const next = polygon[(i + 1) % polygon.length]
+    const dCurrent = ax * current.x + ay * current.y - ac
+    const dNext = ax * next.x + ay * next.y - ac
+    if (inside(current)) out.push(current)
+    if ((dCurrent > 0) !== (dNext > 0)) {
+      const t = dCurrent / (dCurrent - dNext)
+      out.push({
+        x: current.x + (next.x - current.x) * t,
+        y: current.y + (next.y - current.y) * t,
+      })
+    }
+  }
+  return out
+}
+
+/**
+ * Pans d'une toiture à pente constante sur un polygone convexe.
+ *
+ * L'altitude d'un point vaut sa distance au bord la plus courte multipliée par
+ * la pente : c'est la surface du squelette droit. Chaque arête engendre un pan,
+ * obtenu en coupant le polygone par la bissectrice de cette arête avec chacune
+ * des autres. Les arêtes listées dans `gables` sont retirées du calcul de
+ * distance : elles deviennent des pignons verticaux au lieu de croupes.
+ *
+ * Le polygone doit être convexe, faute de quoi le prolongement des arêtes
+ * fausse le résultat. Les emprises quelconques sont donc découpées en
+ * rectangles avant appel.
+ */
+function convexRoofFaces(polygon, pitch, eaveZ, color, stage, gables = []) {
+  const n = polygon.length
+  if (n < 3) return []
+  const slope = Math.tan(pitch)
+
+  let shoelace = 0
+  for (let i = 0; i < n; i++) {
+    const p = polygon[i]
+    const q = polygon[(i + 1) % n]
+    shoelace += p.x * q.y - q.x * p.y
+  }
+  const ccw = shoelace > 0
+
+  const edges = polygon.map((p, i) => {
+    const q = polygon[(i + 1) % n]
+    const ex = q.x - p.x
+    const ey = q.y - p.y
+    const len = Math.hypot(ex, ey) || 1
+    const nx = ccw ? -ey / len : ey / len
+    const ny = ccw ? ex / len : -ex / len
+    return { a: p, b: q, nx, ny, c: nx * p.x + ny * p.y, length: len }
+  })
+
+  const active = edges.map((_, i) => i).filter(i => !gables.includes(i))
+  if (!active.length) return []
+
+  const heightAt = (x, y) => {
+    let d = Infinity
+    for (const i of active) {
+      const e = edges[i]
+      d = Math.min(d, e.nx * x + e.ny * y - e.c)
+    }
+    return eaveZ + slope * Math.max(0, d)
+  }
+
+  const faces = []
+  const thickness = 16
+
+  for (const i of active) {
+    const e = edges[i]
+    if (e.length < 1) continue
+
+    let pan = polygon.map(p => ({ ...p }))
+    for (const j of active) {
+      if (i === j || pan.length < 3) continue
+      const f = edges[j]
+      const ax = e.nx - f.nx
+      const ay = e.ny - f.ny
+      const ac = e.c - f.c
+      if (Math.abs(ax) < 1e-9 && Math.abs(ay) < 1e-9) {
+        if (f.c - e.c > 1e-6) pan = []
+        continue
+      }
+      pan = clipHalfPlane(pan, ax, ay, ac)
+    }
+    if (pan.length < 3) continue
+
+    const top = pan.map(p => [p.x, p.y, heightAt(p.x, p.y)])
+    faces.push(face(top, color, 'toiture', stage))
+    faces.push(face(
+      pan.map(p => [p.x, p.y, heightAt(p.x, p.y) - thickness]),
+      shade(color, -0.22), 'sous-toiture', stage,
+    ))
+  }
+
+  // Pignons : le mur triangulaire qui ferme la toiture au droit d'une arête
+  // écartée du calcul de distance.
+  for (const i of gables) {
+    const e = edges[i]
+    if (!e || e.length < 1) continue
+    const samples = 9
+    const upper = []
+    for (let k = 0; k <= samples; k++) {
+      const t = k / samples
+      const x = e.a.x + (e.b.x - e.a.x) * t
+      const y = e.a.y + (e.b.y - e.a.y) * t
+      upper.push([x, y, heightAt(x, y)])
+    }
+    const lower = [
+      [e.b.x, e.b.y, eaveZ],
+      [e.a.x, e.a.y, eaveZ],
+    ]
+    faces.push(face([...upper, ...lower], MATERIALS.pignon, 'pignon', 'elevation'))
+  }
+
+  return faces
+}
+
+/**
+ * Découpe une emprise rectiligne en rectangles.
+ *
+ * On balaie les abscisses de sommets : entre deux abscisses consécutives,
+ * l'emprise se réduit à un empilement de bandes verticales. Les bandes
+ * contiguës de mêmes bornes sont ensuite refusionnées, si bien qu'une maison
+ * en L ressort en deux rectangles et non en une poussière de tranches.
+ */
+export function decomposeRectangles(polygon) {
+  if (!polygon || polygon.length < 3) return []
+  const xs = [...new Set(polygon.map(p => Math.round(p.x * 10) / 10))].sort((a, b) => a - b)
+  const slabs = []
+
+  for (let i = 0; i < xs.length - 1; i++) {
+    const x0 = xs[i]
+    const x1 = xs[i + 1]
+    if (x1 - x0 < 1) continue
+    const xm = (x0 + x1) / 2
+    const crossings = []
+    for (let k = 0; k < polygon.length; k++) {
+      const a = polygon[k]
+      const b = polygon[(k + 1) % polygon.length]
+      if ((a.x - xm) * (b.x - xm) >= 0) continue
+      const t = (xm - a.x) / (b.x - a.x)
+      crossings.push(a.y + (b.y - a.y) * t)
+    }
+    crossings.sort((a, b) => a - b)
+    for (let k = 0; k + 1 < crossings.length; k += 2) {
+      slabs.push({ x0, x1, y0: crossings[k], y1: crossings[k + 1] })
+    }
+  }
+
+  slabs.sort((a, b) => (a.y0 - b.y0) || (a.y1 - b.y1) || (a.x0 - b.x0))
+  const merged = []
+  for (const slab of slabs) {
+    const last = merged[merged.length - 1]
+    if (last
+      && Math.abs(last.y0 - slab.y0) < 1
+      && Math.abs(last.y1 - slab.y1) < 1
+      && Math.abs(last.x1 - slab.x0) < 1) {
+      last.x1 = slab.x1
+    } else {
+      merged.push({ ...slab })
+    }
+  }
+  return merged.filter(r => r.x1 - r.x0 > 20 && r.y1 - r.y0 > 20)
+}
+
+/** Débord à appliquer sur chaque côté : nul là où un autre corps s'accole */
+function overhangSides(rect, rects, over) {
+  const touches = (side) => rects.some(other => {
+    if (other === rect) return false
+    const overlapY = Math.min(rect.y1, other.y1) - Math.max(rect.y0, other.y0)
+    const overlapX = Math.min(rect.x1, other.x1) - Math.max(rect.x0, other.x0)
+    if (side === 'left') return Math.abs(other.x1 - rect.x0) < 1 && overlapY > 1
+    if (side === 'right') return Math.abs(other.x0 - rect.x1) < 1 && overlapY > 1
+    if (side === 'top') return Math.abs(other.y1 - rect.y0) < 1 && overlapX > 1
+    return Math.abs(other.y0 - rect.y1) < 1 && overlapX > 1
+  })
+  return {
+    left: touches('left') ? 0 : over,
+    right: touches('right') ? 0 : over,
+    top: touches('top') ? 0 : over,
+    bottom: touches('bottom') ? 0 : over,
+  }
+}
+
+/** Altitude du faîtage d'un corps de bâtiment rectangulaire */
+function rectangleApex(width, depth, kind, pitch) {
+  const slope = Math.tan(pitch)
+  if (kind === 'plat') return 25
+  const span = Math.min(width, depth)
+  if (kind === 'monopente') return span * slope
+  return (span / 2) * slope
+}
+
+/** Altitude du point le plus haut de la toiture, tous corps confondus */
+export function roofApexHeight(contourPoints, roof) {
+  const rects = decomposeRectangles(contourPoints)
+  if (!rects.length) return 0
+  const pitch = ((roof?.pitch ?? 35) * Math.PI) / 180
+  const over = roof?.overhang || 0
+  const kind = roof?.kind || '2pans'
+  let best = 0
+  for (const rect of rects) {
+    const sides = overhangSides(rect, rects, over)
+    const width = (rect.x1 + sides.right) - (rect.x0 - sides.left)
+    const depth = (rect.y1 + sides.bottom) - (rect.y0 - sides.top)
+    best = Math.max(best, rectangleApex(width, depth, kind, pitch))
+  }
+  return best
+}
+
+/**
+ * Altitude de la surface de toiture d'un corps, en un point donné.
+ * Sert à raccorder deux corps voisins dont les faîtages ne sont pas à la même
+ * hauteur : le décroché se ferme par un mur vertical.
+ */
+function roofHeightAt(poly, gables, pitch, eaveZ, x, y) {
+  const n = poly.length
+  let shoelace = 0
+  for (let i = 0; i < n; i++) {
+    shoelace += poly[i].x * poly[(i + 1) % n].y - poly[(i + 1) % n].x * poly[i].y
+  }
+  const ccw = shoelace > 0
+  let d = Infinity
+  for (let i = 0; i < n; i++) {
+    if (gables.includes(i)) continue
+    const p = poly[i]
+    const q = poly[(i + 1) % n]
+    const ex = q.x - p.x
+    const ey = q.y - p.y
+    const len = Math.hypot(ex, ey) || 1
+    const nx = ccw ? -ey / len : ey / len
+    const ny = ccw ? ex / len : -ex / len
+    d = Math.min(d, nx * x + ny * y - (nx * p.x + ny * p.y))
+  }
+  return eaveZ + Math.tan(pitch) * Math.max(0, d)
+}
+
+/**
+ * Toiture d'une emprise quelconque, corps par corps.
+ *
+ * L'emprise est découpée en rectangles et chaque corps reçoit son propre toit
+ * du type demandé — c'est ainsi qu'on couvre réellement une maison en L. Là où
+ * deux corps s'accolent, leurs faîtages ne sont pas à la même hauteur : la
+ * différence se ferme par un mur vertical, et la ligne de rencontre des deux
+ * pans forme la noue.
+ */
+function multiWingRoofFaces(contourPoints, roof, eaveZ) {
+  const rects = decomposeRectangles(contourPoints)
+  if (!rects.length) return []
+
+  const over = roof?.overhang || 0
+  const pitch = ((roof?.pitch ?? 35) * Math.PI) / 180
+  const kind = roof?.kind || '2pans'
+  const faces = []
+  const wings = []
+
+  for (const rect of rects) {
+    const sides = overhangSides(rect, rects, over)
+    const x0 = rect.x0 - sides.left
+    const x1 = rect.x1 + sides.right
+    const y0 = rect.y0 - sides.top
+    const y1 = rect.y1 + sides.bottom
+    // arêtes du rectangle : 0 haut, 1 droite, 2 bas, 3 gauche
+    const poly = [
+      { x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 },
+    ]
+
+    if (kind === 'plat') {
+      faces.push(...box(poly, eaveZ, eaveZ + 25, MATERIALS.toiturePlate, 'toiture', 'couverture'))
+      continue
+    }
+
+    const alongX = (x1 - x0) >= (y1 - y0)
+    let gables = []
+    if (kind === '2pans') gables = alongX ? [1, 3] : [0, 2]
+    else if (kind === 'monopente') gables = alongX ? [1, 2, 3] : [0, 1, 2]
+
+    faces.push(...convexRoofFaces(poly, pitch, eaveZ, MATERIALS.toiture, 'couverture', gables))
+    wings.push({ rect, poly, gables })
+  }
+
+  // Fermeture des décrochés entre corps voisins
+  for (let i = 0; i < wings.length; i++) {
+    for (let j = i + 1; j < wings.length; j++) {
+      const a = wings[i]
+      const b = wings[j]
+      const segment = sharedBoundary(a.rect, b.rect)
+      if (!segment) continue
+
+      const samples = 10
+      const upper = []
+      const lower = []
+      for (let k = 0; k <= samples; k++) {
+        const t = k / samples
+        const x = segment.x0 + (segment.x1 - segment.x0) * t
+        const y = segment.y0 + (segment.y1 - segment.y0) * t
+        const ha = roofHeightAt(a.poly, a.gables, pitch, eaveZ, x, y)
+        const hb = roofHeightAt(b.poly, b.gables, pitch, eaveZ, x, y)
+        upper.push([x, y, Math.max(ha, hb)])
+        lower.push([x, y, Math.min(ha, hb)])
+      }
+      const gap = upper.some((p, k) => p[2] - lower[k][2] > 2)
+      if (!gap) continue
+      faces.push(face([...upper, ...lower.reverse()], MATERIALS.pignon, 'pignon', 'couverture'))
+    }
+  }
+
+  return faces
+}
+
+/** Segment commun à deux rectangles accolés, s'il existe */
+function sharedBoundary(a, b) {
+  const overlapY = () => ({
+    from: Math.max(a.y0, b.y0),
+    to: Math.min(a.y1, b.y1),
+  })
+  const overlapX = () => ({
+    from: Math.max(a.x0, b.x0),
+    to: Math.min(a.x1, b.x1),
+  })
+
+  if (Math.abs(a.x1 - b.x0) < 1 || Math.abs(b.x1 - a.x0) < 1) {
+    const { from, to } = overlapY()
+    if (to - from > 1) {
+      const x = Math.abs(a.x1 - b.x0) < 1 ? a.x1 : a.x0
+      return { x0: x, y0: from, x1: x, y1: to }
+    }
+  }
+  if (Math.abs(a.y1 - b.y0) < 1 || Math.abs(b.y1 - a.y0) < 1) {
+    const { from, to } = overlapX()
+    if (to - from > 1) {
+      const y = Math.abs(a.y1 - b.y0) < 1 ? a.y1 : a.y0
+      return { x0: from, y0: y, x1: to, y1: y }
+    }
+  }
+  return null
+}
+
+/** L'emprise remplit-elle son rectangle englobant ? */
+export function isRectangular(polygon) {
+  if (!polygon || polygon.length < 3) return true
+  let area2 = 0
+  for (let i = 0; i < polygon.length; i++) {
+    const p = polygon[i]
+    const q = polygon[(i + 1) % polygon.length]
+    area2 += p.x * q.y - q.x * p.y
+  }
+  const area = Math.abs(area2) / 2
+  const xs = polygon.map(p => p.x)
+  const ys = polygon.map(p => p.y)
+  const boxArea = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys))
+  return boxArea > 0 && area >= boxArea * 0.97
 }
 
 /* ------------------------------------------------------------ toiture */
@@ -505,10 +873,17 @@ function trussFaces(walls, roof, height, contourPoints) {
  * volontaire : elle donne le volume et la hauteur au faîtage sans prétendre
  * représenter les noues.
  */
-export function roofFaces(walls, roof, eaveZ) {
+export function roofFaces(walls, roof, eaveZ, contourPoints = null) {
   const bb = wallsBoundingBox(walls)
   if (!Number.isFinite(bb.minX)) return []
   const over = roof?.overhang || 0
+
+  // Emprise non rectangulaire : la toiture est engendrée pan par pan sur le
+  // contour réel, avec ses arêtiers et ses noues. Le rectangle englobant ne
+  // convient qu'aux emprises qui le remplissent.
+  if (contourPoints && contourPoints.length >= 3 && !isRectangular(contourPoints)) {
+    return multiWingRoofFaces(contourPoints, roof, eaveZ)
+  }
   const x0 = bb.minX - over
   const x1 = bb.maxX + over
   const y0 = bb.minY - over
@@ -538,7 +913,7 @@ export function roofFaces(walls, roof, eaveZ) {
       ? [[x0, y0, eaveZ], [x1, y0, eaveZ], [x1, y1, zHigh], [x0, y1, zHigh]]
       : [[x0, y0, eaveZ], [x0, y1, eaveZ], [x1, y1, zHigh], [x1, y0, zHigh]]
     const faces = [face(pts, color, 'toiture', stage)]
-    faces.push(face(pts.map(p => [p[0], p[1], p[2] - thickness]), shade(color, -0.2), 'toiture', stage))
+    faces.push(face(pts.map(p => [p[0], p[1], p[2] - thickness]), shade(color, -0.2), 'sous-toiture', stage))
     if (alongX) {
       faces.push(face([[x0, y0, eaveZ], [x0, y1, zHigh], [x0, y1, eaveZ]], MATERIALS.pignon, 'pignon', 'elevation'))
       faces.push(face([[x1, y0, eaveZ], [x1, y1, eaveZ], [x1, y1, zHigh]], MATERIALS.pignon, 'pignon', 'elevation'))
@@ -767,7 +1142,7 @@ export function buildScene(plan, options = {}) {
 
   // Couverture
   if (options.showRoof !== false) {
-    faces.push(...roofFaces(walls, plan.roof, height + lift))
+    faces.push(...roofFaces(walls, plan.roof, height + lift, contour.points))
   }
 
   // Menuiseries
@@ -930,6 +1305,56 @@ export function drawScene(ctx, polygons, width, height, sky = '#DCE9F5') {
 
 /* --------------------------------------------------------- utilitaires */
 
+/** Aire d'un polygone quelconque dans l'espace */
+function spatialArea(points) {
+  let nx = 0
+  let ny = 0
+  let nz = 0
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]
+    const q = points[(i + 1) % points.length]
+    nx += p[1] * q[2] - p[2] * q[1]
+    ny += p[2] * q[0] - p[0] * q[2]
+    nz += p[0] * q[1] - p[1] * q[0]
+  }
+  return Math.hypot(nx, ny, nz) / 2
+}
+
+/**
+ * Surface développée de la couverture, mesurée sur les pans réellement
+ * engendrés. Sur une emprise en L, la formule du rectangle englobant
+ * surestimait franchement le métré.
+ */
+export function coverageArea(walls, roof) {
+  const list = walls || []
+  if (!list.length) return 0
+  const contour = outerContour(list)
+
+  // Un toit plat se réduit à son emprise débordée : ses facettes forment un
+  // volume, les sommer reviendrait à compter aussi les rives et le dessous.
+  if (roof?.kind === 'plat') {
+    const bb = wallsBoundingBox(list)
+    const over = roof?.overhang || 0
+    if (contour.points.length >= 3 && !isRectangular(contour.points)) {
+      const outline = offsetPolygon(contour.points, over)
+      let area2 = 0
+      for (let i = 0; i < outline.length; i++) {
+        const p = outline[i]
+        const q = outline[(i + 1) % outline.length]
+        area2 += p.x * q.y - q.x * p.y
+      }
+      return Math.round(Math.abs(area2) / 2 / 100) / 100
+    }
+    return Math.round(((bb.width + 2 * over) * (bb.height + 2 * over)) / 100) / 100
+  }
+
+  const faces = roofFaces(list, roof, 0, contour.points)
+  const total = faces
+    .filter(f => f.kind === 'toiture')
+    .reduce((sum, f) => sum + spatialArea(f.points), 0)
+  return Math.round(total / 100) / 100
+}
+
 /** Éclaircit (amount > 0) ou assombrit (amount < 0) une couleur hexadécimale */
 export function shade(hex, amount) {
   const value = hex.replace('#', '')
@@ -943,14 +1368,23 @@ export function shade(hex, amount) {
 
 /** Hauteur au faîtage, utile pour vérifier les règles d'urbanisme */
 export function ridgeHeight(plan) {
-  const bb = wallsBoundingBox(plan.walls || [])
+  const walls = plan.walls || []
+  const bb = wallsBoundingBox(walls)
   if (!Number.isFinite(bb.minX)) return 0
   const roof = plan.roof || {}
-  if (roof.kind === 'plat') return (plan.ceilingHeight || 250) + 25
-  const span = Math.min(bb.width, bb.height) + 2 * (roof.overhang || 0)
+  const ceiling = plan.ceilingHeight || 250
+  if (roof.kind === 'plat') return ceiling + 25
+
   const pitch = ((roof.pitch ?? 35) * Math.PI) / 180
+  const contour = outerContour(walls)
+
+  if (contour.points.length >= 3 && !isRectangular(contour.points)) {
+    return ceiling + roofApexHeight(contour.points, roof)
+  }
+
+  const span = Math.min(bb.width, bb.height) + 2 * (roof.overhang || 0)
   const extra = roof.kind === 'monopente'
     ? span * Math.tan(pitch)
     : (span / 2) * Math.tan(pitch)
-  return (plan.ceilingHeight || 250) + extra
+  return ceiling + extra
 }

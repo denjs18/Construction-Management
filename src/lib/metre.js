@@ -20,6 +20,7 @@ import {
 import { PRICE_BY_ID, STRUCTURE_BY_ID, ROOM_TYPE_BY_ID, priceOf } from '../data/prices'
 import { planElectricalNeeds, computeElectrical } from './electrical'
 import { computePlumbing } from './plumbing'
+import { coverageArea } from './render3d'
 
 /* ---------------------------------------------------------------- le plan */
 
@@ -165,11 +166,9 @@ export function computeSurfaces(plan) {
   const partitionArea = Math.max(0, partitionLength * h - interiorOpeningArea)
   const interiorBearingArea = Math.max(0, interiorBearingLength * h)
 
-  // Toiture : surface rampante avec débord
-  const roofFootprint = footprint + perimeter * ((plan.roof?.overhang || 0) / 100)
-  const roofArea = plan.roof?.kind === 'plat'
-    ? roofFootprint
-    : roofFootprint / Math.cos(pitchRad)
+  // Toiture : mesurée sur les pans réellement engendrés, ce qui reste juste
+  // quelle que soit la forme de l'emprise.
+  const roofArea = coverageArea(walls, plan.roof)
 
   return {
     rooms,
