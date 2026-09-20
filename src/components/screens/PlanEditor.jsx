@@ -14,6 +14,7 @@ import {
 } from '../../lib/geometry'
 import { computeSurfaces, levelPlan, createEmptyLevel } from '../../lib/metre'
 import { STRUCTURE_TYPES, STRUCTURE_BY_ID, ROOM_TYPES, ROOF_TYPES } from '../../data/prices'
+import { HOUSE_MODELS } from '../../data/housePlans'
 import { stairGeometry, checkStair, STAIR_KINDS } from '../../lib/stairs'
 
 const OPENING_KINDS = [
@@ -405,6 +406,15 @@ export default function PlanEditor() {
     setTimeout(() => canvasRef.current?.fit(), 60)
   }
 
+  const loadModel = (model) => {
+    pushHistory()
+    updatePlan(model.build())
+    setSheet(null)
+    setMode('view')
+    setActiveLevel(1)
+    setTimeout(() => canvasRef.current?.fit(), 60)
+  }
+
   const setRoomMeta = (room, patch) => {
     const metas = level.roomMeta || []
     const existing = metas.find(m => m.id === room.metaId)
@@ -590,6 +600,19 @@ export default function PlanEditor() {
                 <p className="text-xs text-gray-500">Pour une maison en L, en U ou toute forme particulière</p>
               </div>
             </button>
+            {HOUSE_MODELS.map(model => (
+              <button
+                key={model.id}
+                onClick={() => loadModel(model)}
+                className="w-full flex items-center gap-3 p-3 bg-amber-50 border border-amber-100 rounded-xl text-left active:bg-amber-100"
+              >
+                <span className="text-2xl">{model.icon}</span>
+                <div className="flex-1">
+                  <p className="font-semibold text-sm text-gray-900">{model.label}</p>
+                  <p className="text-xs text-gray-500">{model.description}</p>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -1184,7 +1207,7 @@ function LevelBar({ levels, activeIndex, onSelect, onAdd, onRemove }) {
               i === activeIndex ? 'bg-white text-slate-900' : 'bg-white/10 text-white/70'
             }`}
           >
-            {i === 0 ? 'RDC' : `Étage ${i}`}
+            {level.name}
           </button>
         ))}
         <button

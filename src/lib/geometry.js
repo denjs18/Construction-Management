@@ -348,10 +348,30 @@ export function splitWalls(walls) {
  */
 function buildGraph(walls) {
   const nodes = new Map()
+  // Les points sont regroupés par proximité réelle, jamais par arrondi : deux
+  // extrémités distantes de 10^-12 cm peuvent tomber de part et d'autre d'une
+  // frontière de grille et casser silencieusement la détection des pièces.
+  const CELL = NODE_TOLERANCE * 2
+  const buckets = new Map()
   const ensure = (p) => {
-    const key = nodeKey(p)
-    if (!nodes.has(key)) nodes.set(key, { key, x: p.x, y: p.y, neighbours: [] })
-    return nodes.get(key)
+    const cx = Math.floor(p.x / CELL)
+    const cy = Math.floor(p.y / CELL)
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        const list = buckets.get(`${cx + dx}:${cy + dy}`)
+        if (!list) continue
+        for (const node of list) {
+          if (Math.hypot(node.x - p.x, node.y - p.y) <= NODE_TOLERANCE) return node
+        }
+      }
+    }
+    const node = { key: nodeKey(p), x: p.x, y: p.y, neighbours: [] }
+    while (nodes.has(node.key)) node.key += "'"
+    nodes.set(node.key, node)
+    const cell = `${cx}:${cy}`
+    if (!buckets.has(cell)) buckets.set(cell, [])
+    buckets.get(cell).push(node)
+    return node
   }
   for (const wall of walls) {
     if (wallLength(wall) < NODE_TOLERANCE) continue

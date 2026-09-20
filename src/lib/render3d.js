@@ -17,7 +17,7 @@ import {
 } from './geometry'
 import { BUILD_STAGES, STAGE_INDEX } from '../data/buildStages'
 import { ITEM_BY_ID } from './electrical'
-import { stairGeometry } from './stairs'
+import { stairGeometry, stairFootprint } from './stairs'
 
 export { BUILD_STAGES, STAGE_INDEX }
 
@@ -402,10 +402,14 @@ function foundationFaces(walls, bearingIds, plan) {
  * reçoit la sienne, portée par ses propres murs. Sur une maison en L, les deux
  * ailes ont donc chacune leur faîtage, à leur hauteur propre.
  */
-function trussFaces(walls, roof, height, contourPoints) {
+function trussFaces(walls, roof, height, contourPoints, excluded = []) {
   if (roof?.kind === 'plat') return []
+  // Un corps surmonté d'un niveau supérieur, ou occupé par une terrasse, ne
+  // porte pas de charpente à cette hauteur-là : on retranche ces emprises
+  // avant de découper, sans quoi une aile de plain-pied se retrouvait sans
+  // fermes dès qu'un corps chevauchait les deux.
   const rects = contourPoints && contourPoints.length >= 3
-    ? decomposeRectangles(contourPoints)
+    ? gridRects(contourPoints, excluded)
     : []
   if (!rects.length) return []
 
@@ -683,6 +687,60 @@ export function decomposeRectangles(polygon) {
   return merged.filter(r => r.x1 - r.x0 > 20 && r.y1 - r.y0 > 20)
 }
 
+/**
+ * Découpe l'emprise en rectangles, en retirant ce qui est déjà couvert.
+ *
+ * Tester le seul centre de chaque corps ne suffit pas : sur un L, la
+ * décomposition peut produire un corps à cheval sur la partie surmontée d'un
+ * étage et sur l'aile de plain-pied, et l'aile perdait alors sa toiture. On
+ * pose donc une grille sur toutes les abscisses et ordonnées remarquables,
+ * on garde les mailles réellement à découvert, puis on les recolle.
+ */
+function gridRects(contourPoints, covered = []) {
+  if (!contourPoints || contourPoints.length < 3) return []
+  const r1 = (v) => Math.round(v * 10) / 10
+  const axis = (key) => [...new Set([
+    ...contourPoints.map(p => r1(p[key])),
+    ...covered.flatMap(poly => poly.map(p => r1(p[key]))),
+  ])].sort((a, b) => a - b)
+  const xs = axis('x')
+  const ys = axis('y')
+
+  const bands = []
+  for (let j = 0; j + 1 < ys.length; j += 1) {
+    const y0 = ys[j]
+    const y1 = ys[j + 1]
+    if (y1 - y0 < 1) continue
+    const ym = (y0 + y1) / 2
+    const row = []
+    for (let i = 0; i + 1 < xs.length; i += 1) {
+      const x0 = xs[i]
+      const x1 = xs[i + 1]
+      if (x1 - x0 < 1) continue
+      const p = { x: (x0 + x1) / 2, y: ym }
+      if (!pointInPolygonXY(p, contourPoints)) continue
+      if (covered.some(poly => pointInPolygonXY(p, poly))) continue
+      const last = row[row.length - 1]
+      if (last && Math.abs(last.x1 - x0) < 1) last.x1 = x1
+      else row.push({ x0, x1 })
+    }
+    if (!row.length) continue
+    const prev = bands[bands.length - 1]
+    const same = prev
+      && Math.abs(prev.y1 - y0) < 1
+      && prev.row.length === row.length
+      && prev.row.every((c, k) => Math.abs(c.x0 - row[k].x0) < 1 && Math.abs(c.x1 - row[k].x1) < 1)
+    if (same) prev.y1 = y1
+    else bands.push({ y0, y1, row })
+  }
+
+  const rects = []
+  for (const band of bands) {
+    for (const cell of band.row) rects.push({ x0: cell.x0, x1: cell.x1, y0: band.y0, y1: band.y1 })
+  }
+  return rects.filter(r => r.x1 - r.x0 > 20 && r.y1 - r.y0 > 20)
+}
+
 /** Débord à appliquer sur chaque côté : nul là où un autre corps s'accole */
 function overhangSides(rect, rects, over) {
   const touches = (side) => rects.some(other => {
@@ -765,14 +823,12 @@ function roofHeightAt(poly, gables, pitch, eaveZ, x, y) {
  * pans forme la noue.
  */
 function multiWingRoofFaces(contourPoints, roof, eaveZ, terraces = []) {
-  const all = decomposeRectangles(contourPoints)
-  // Une terrasse est à ciel ouvert : le corps qui la porte ne reçoit pas de toit
-  const rects = all.filter(rect => {
-    const cx = (rect.x0 + rect.x1) / 2
-    const cy = (rect.y0 + rect.y1) / 2
-    return !terraces.some(poly => pointInPolygonXY({ x: cx, y: cy }, poly))
-  })
+  // Ce que couvre déjà un étage, ou ce qu'une terrasse laisse à ciel ouvert,
+  // est retiré de l'emprise avant d'engendrer les pans.
+  const rects = gridRects(contourPoints, terraces)
   if (!rects.length) return []
+  // Le débord meurt contre les corps voisins, y compris ceux qu'on a retirés.
+  const abutting = [...rects, ...terraces.flatMap(poly => gridRects(poly, []))]
 
   const over = roof?.overhang || 0
   const pitch = ((roof?.pitch ?? 35) * Math.PI) / 180
@@ -781,7 +837,7 @@ function multiWingRoofFaces(contourPoints, roof, eaveZ, terraces = []) {
   const wings = []
 
   for (const rect of rects) {
-    const sides = overhangSides(rect, rects, over)
+    const sides = overhangSides(rect, abutting, over)
     const x0 = rect.x0 - sides.left
     const x1 = rect.x1 + sides.right
     const y0 = rect.y0 - sides.top
@@ -1081,6 +1137,83 @@ function networkFaces(networks, plan) {
   return faces
 }
 
+/* ------------------------------------------------------------ pavage */
+
+const MAX_FACE_SPAN = 320 // cm
+
+const lerp3 = (p, q, t) => [
+  p[0] + (q[0] - p[0]) * t,
+  p[1] + (q[1] - p[1]) * t,
+  p[2] + (q[2] - p[2]) * t,
+]
+
+const edgeLength = (p, q) => Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2])
+
+/** Découpe un quadrilatère plan en nu × nv mailles */
+function tileQuad(f, nu, nv) {
+  const [a, b, c, d] = f.points
+  const at = (u, v) => lerp3(lerp3(a, b, u), lerp3(d, c, u), v)
+  const out = []
+  for (let i = 0; i < nu; i += 1) {
+    for (let j = 0; j < nv; j += 1) {
+      const u0 = i / nu
+      const u1 = (i + 1) / nu
+      const v0 = j / nv
+      const v1 = (j + 1) / nv
+      out.push({ ...f, points: [at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1)] })
+    }
+  }
+  return out
+}
+
+/** Découpe un triangle en quatre, par ses milieux, jusqu'à la maille voulue */
+function tileTriangle(f, depth) {
+  if (depth <= 0) return [f]
+  const [a, b, c] = f.points
+  const ab = lerp3(a, b, 0.5)
+  const bc = lerp3(b, c, 0.5)
+  const ca = lerp3(c, a, 0.5)
+  return [
+    { ...f, points: [a, ab, ca] },
+    { ...f, points: [ab, b, bc] },
+    { ...f, points: [ca, bc, c] },
+    { ...f, points: [ab, bc, ca] },
+  ].flatMap(part => tileTriangle(part, depth - 1))
+}
+
+/**
+ * Pave les très grandes facettes.
+ *
+ * Le rendu peint du plus lointain au plus proche, en classant chaque facette
+ * sur la profondeur de son centre. Un pan de toiture de quinze mètres a un
+ * centre lointain, et il passait derrière un mur pourtant situé loin derrière
+ * lui : l'aile arrière traversait la toiture. Découpées, les facettes se
+ * classent correctement, pour un coût négligeable — seules quelques dizaines
+ * de facettes sont assez grandes pour être concernées.
+ */
+function tessellate(faces, maxSpan = MAX_FACE_SPAN) {
+  const out = []
+  for (const f of faces) {
+    const n = f.points.length
+    if (n !== 3 && n !== 4) { out.push(f); continue }
+    let longest = 0
+    for (let i = 0; i < n; i += 1) {
+      longest = Math.max(longest, edgeLength(f.points[i], f.points[(i + 1) % n]))
+    }
+    if (longest <= maxSpan) { out.push(f); continue }
+    if (n === 3) {
+      out.push(...tileTriangle(f, Math.min(3, Math.ceil(Math.log2(longest / maxSpan)))))
+      continue
+    }
+    const [a, b, c, d] = f.points
+    const nu = Math.max(1, Math.min(12, Math.ceil(Math.max(edgeLength(a, b), edgeLength(d, c)) / maxSpan)))
+    const nv = Math.max(1, Math.min(12, Math.ceil(Math.max(edgeLength(b, c), edgeLength(a, d)) / maxSpan)))
+    if (nu === 1 && nv === 1) { out.push(f); continue }
+    out.push(...tileQuad(f, nu, nv))
+  }
+  return out
+}
+
 /* --------------------------------------------------------- construction */
 
 /* ---------------------------------------------- équipements et escaliers */
@@ -1166,6 +1299,31 @@ function stairFaces(stair, geometry, baseZ, stage) {
   return faces
 }
 
+/**
+ * Plancher d'un niveau, percé des vides sur séjour.
+ *
+ * Un vide n'est pas un trou dans une dalle coulée : c'est une zone qu'on ne
+ * coule pas. On décompose donc l'emprise en corps et on écarte ceux que le vide
+ * occupe, plutôt que de tenter une soustraction de polygones.
+ */
+function slabFaces(contourPoints, z0, z1, holes, color, kind, stage) {
+  if (!contourPoints || contourPoints.length < 3) return []
+  if (!holes || !holes.length) {
+    return box(contourPoints.map(p => ({ x: p.x, y: p.y })), z0, z1, color, kind, stage)
+  }
+  const faces = []
+  // La découpe doit suivre le vide, pas seulement l'éviter : un plancher
+  // rectangulaire ne donne qu'un seul corps, dont le centre tombe hors du
+  // vide, et la trémie ne s'ouvrait jamais.
+  for (const rect of gridRects(contourPoints, holes)) {
+    faces.push(...box([
+      { x: rect.x0, y: rect.y0 }, { x: rect.x1, y: rect.y0 },
+      { x: rect.x1, y: rect.y1 }, { x: rect.x0, y: rect.y1 },
+    ], z0, z1, color, kind, stage))
+  }
+  return faces
+}
+
 /* --------------------------------------------------------- construction */
 
 /**
@@ -1219,18 +1377,30 @@ export function buildScene(plan, options = {}) {
   const topIndex = levels.length - 1
   const bb = wallsBoundingBox(allWalls)
   const groundContour = outerContour(levels[0].walls || [])
-  const topContour = outerContour(levels[topIndex].walls || [])
   const exteriorIds = new Set(options.exteriorWallIds || allWalls.map(w => w.id))
   const visible = (i) => onlyLevel === null || onlyLevel === i
 
+  // Emprises des terrasses et des vides, niveau par niveau. Les premières
+  // percent la toiture, les seconds percent le plancher.
+  const roomsOf = (i) => {
+    const entry = options.levelRooms?.[i]
+    return {
+      open: Array.isArray(entry?.open) ? entry.open : [],
+      outdoor: Array.isArray(entry?.outdoor) ? entry.outdoor : [],
+    }
+  }
+
   const faces = []
 
-  // Terrain
-  if (onlyLevel === null || onlyLevel === 0) {
+  // Terrain, posé au niveau du sol naturel : un sous-sol est enterré, et c'est
+  // le rez-de-chaussée qui affleure.
+  const groundIndex = Math.min(plan.groundLevel ?? 0, levels.length - 1)
+  const groundZ = elevations[groundIndex] - 2
+  if (onlyLevel === null || onlyLevel === groundIndex) {
     const pad = 350
     faces.push(face([
-      [bb.minX - pad, bb.minY - pad, -2], [bb.maxX + pad, bb.minY - pad, -2],
-      [bb.maxX + pad, bb.maxY + pad, -2], [bb.minX - pad, bb.maxY + pad, -2],
+      [bb.minX - pad, bb.minY - pad, groundZ], [bb.maxX + pad, bb.minY - pad, groundZ],
+      [bb.maxX + pad, bb.maxY + pad, groundZ], [bb.minX - pad, bb.maxY + pad, groundZ],
     ], MATERIALS.terrain, 'terrain', 'terrain'))
   }
 
@@ -1253,8 +1423,16 @@ export function buildScene(plan, options = {}) {
 
   /* -------------------------------- niveau par niveau -------------------------------- */
 
+  // Un sous-sol ne se voit pas depuis l'extérieur : on ne le dessine que
+  // lorsqu'on l'isole, ou tant que les terres ne sont pas remblayées. Sinon
+  // ses murs perçaient le terrain, le tri par profondeur ne départageant pas
+  // une paroi enterrée du sol qui la recouvre.
+  const buriedVisible = onlyLevel !== null
+    || options.exploded
+    || (stageActive && stageLimit <= STAGE_INDEX.dalle)
   for (let i = 0; i < levels.length; i++) {
     if (!visible(i)) continue
+    if (levels[i].kind === 'sous-sol' && !buriedVisible) continue
     const level = levels[i]
     const baseZ = elevations[i]
     const height = level.ceilingHeight || 250
@@ -1262,15 +1440,20 @@ export function buildScene(plan, options = {}) {
     const openings = level.openings || []
     if (!walls.length) continue
 
-    // Plancher porteur de ce niveau
+    // Plancher porteur de ce niveau, percé des vides sur séjour et des trémies
     if (i > 0 && !showNetworks) {
       const contour = outerContour(walls)
-      if (contour.points.length >= 3) {
-        faces.push(...box(
-          contour.points.map(p => ({ x: p.x, y: p.y })),
-          baseZ - floorThickness, baseZ, MATERIALS.dalle, 'plancher', 'elevation',
-        ))
+      const holes = [...roomsOf(i).open]
+      for (const stair of plan.stairs || []) {
+        if ((stair.levelFrom ?? 0) !== i - 1) continue
+        const rise = (levels[i - 1].ceilingHeight || 250) + floorThickness
+        const geometry = stairGeometry(rise, stair.kind, stair.width)
+        holes.push(stairFootprint(stair, geometry).corners)
       }
+      faces.push(...slabFaces(
+        contour.points, baseZ - floorThickness, baseZ,
+        holes, MATERIALS.dalle, 'plancher', 'elevation',
+      ))
     }
 
     // Murs. Les cloisons arrivent en fin de chantier et s'effacent en mode réseaux.
@@ -1316,35 +1499,49 @@ export function buildScene(plan, options = {}) {
 
   /* --------------------------- charpente et couverture --------------------------- */
 
-  const topLevel = levels[topIndex]
-  const eaveZ = elevations[topIndex] + (topLevel.ceilingHeight || 250)
+  /*
+   * Une toiture par niveau, sur la seule portion que le niveau supérieur ne
+   * recouvre pas. C'est ce qui permet à une aile de plain-pied d'avoir son
+   * propre toit, plus bas que celui de l'aile à étage.
+   *
+   * Isoler un niveau n'a d'intérêt que pour en voir l'intérieur : la toiture
+   * s'efface alors d'elle-même.
+   */
   const lift = options.exploded ? 150 : 0
-  // Isoler un niveau n'a d'intérêt que pour en voir l'intérieur : la toiture
-  // et le plancher supérieur s'effacent d'eux-mêmes.
   const roofHidden = options.showRoof === false || onlyLevel !== null
-  const showTop = onlyLevel === null || onlyLevel === topIndex
   const duringFraming = stageActive
     && stageLimit >= STAGE_INDEX.charpente
     && stageLimit < STAGE_INDEX.couverture
-
   const wantsFraming = onlyLevel === null
     && (options.showRoof === false || options.exploded || duringFraming)
-  if (showTop && showStructure && !showNetworks && wantsFraming) {
-    faces.push(...trussFaces(topLevel.walls || [], plan.roof, eaveZ, topContour.points))
-  }
 
-  if (showTop && !roofHidden) {
-    faces.push(...roofFaces(
-      topLevel.walls || [], plan.roof, eaveZ + lift, topContour.points,
-      options.terraces || [],
-    ))
+  for (let i = 0; i < levels.length; i++) {
+    if (onlyLevel !== null && onlyLevel !== i) continue
+    const levelWalls = levels[i].walls || []
+    if (!levelWalls.length) continue
+    const contour = outerContour(levelWalls)
+    if (contour.points.length < 3) continue
+
+    const eaveZ = elevations[i] + (levels[i].ceilingHeight || 250)
+    const above = i + 1 < levels.length ? outerContour(levels[i + 1].walls || []) : null
+    const covered = [
+      ...(above && above.points.length >= 3 ? [above.points] : []),
+      ...roomsOf(i).outdoor,
+    ]
+
+    if (showStructure && !showNetworks && wantsFraming) {
+      faces.push(...trussFaces(levelWalls, plan.roof, eaveZ, contour.points, covered))
+    }
+    if (!roofHidden) {
+      faces.push(...roofFaces(levelWalls, plan.roof, eaveZ + lift, contour.points, covered))
+    }
   }
 
   if (showNetworks) faces.push(...networkFaces(options.networks, plan))
 
-  const shown = !stageActive
+  const shown = tessellate(!stageActive
     ? faces
-    : faces.filter(f => (STAGE_INDEX[f.stage] ?? 0) <= stageLimit)
+    : faces.filter(f => (STAGE_INDEX[f.stage] ?? 0) <= stageLimit))
 
   return { faces: shown, allFaces: faces, bbox: bb, contour: groundContour, elevations }
 }
@@ -1488,7 +1685,15 @@ export function drawScene(ctx, polygons, width, height, sky = '#DCE9F5') {
     ctx.closePath()
     ctx.fillStyle = poly.color
     ctx.fill()
-    if (poly.kind !== 'terrain') ctx.stroke()
+    if (poly.kind === 'terrain') {
+      // Le sol est pavé : on repasse le contour dans sa propre teinte pour
+      // masquer les coutures laissées par l'anticrénelage entre deux dalles.
+      ctx.strokeStyle = poly.color
+      ctx.stroke()
+      ctx.strokeStyle = 'rgba(30,41,59,0.16)'
+    } else {
+      ctx.stroke()
+    }
   }
 }
 
@@ -1544,6 +1749,44 @@ export function coverageArea(walls, roof) {
   return Math.round(total / 100) / 100
 }
 
+/**
+ * Surface développée de l'ensemble des toitures du bâtiment.
+ *
+ * Chaque niveau ne porte de couverture que sur ce que le niveau supérieur ne
+ * recouvre pas : une aile de plain-pied a son propre toit, plus bas.
+ */
+export function buildingCoverageArea(plan) {
+  const levels = plan?.levels || []
+  const roof = plan?.roof
+  let total = 0
+
+  for (let i = 0; i < levels.length; i++) {
+    const walls = levels[i].walls || []
+    if (!walls.length) continue
+    const contour = outerContour(walls)
+    if (contour.points.length < 3) continue
+    const above = i + 1 < levels.length ? outerContour(levels[i + 1].walls || []) : null
+    const covered = above && above.points.length >= 3 ? [above.points] : []
+
+    if (roof?.kind === 'plat') {
+      total += uncoveredFootprint(contour.points, covered) * 10000
+      continue
+    }
+    total += roofFaces(walls, roof, 0, contour.points, covered)
+      .filter(f => f.kind === 'toiture')
+      .reduce((sum, f) => sum + spatialArea(f.points), 0)
+  }
+  return Math.round(total / 100) / 100
+}
+
+/** Emprise d'un niveau que rien ne recouvre, en m² */
+export function uncoveredFootprint(contourPoints, covered = []) {
+  if (!contourPoints || contourPoints.length < 3) return 0
+  const area = gridRects(contourPoints, covered)
+    .reduce((sum, r) => sum + (r.x1 - r.x0) * (r.y1 - r.y0), 0)
+  return Math.round(area / 100) / 100
+}
+
 /** Éclaircit (amount > 0) ou assombrit (amount < 0) une couleur hexadécimale */
 export function shade(hex, amount) {
   const value = hex.replace('#', '')
@@ -1557,32 +1800,26 @@ export function shade(hex, amount) {
 
 /** Hauteur au faîtage, utile pour vérifier les règles d'urbanisme */
 export function ridgeHeight(plan) {
-  const levels = plan.levels || []
-  const floorThickness = plan.floorThickness ?? 25
-  const walls = levels.length ? (levels[levels.length - 1].walls || []) : (plan.walls || [])
-  // hauteur cumulée des niveaux jusqu'à l'égout du dernier
-  let stack = 0
-  for (let i = 0; i < levels.length - 1; i++) {
-    stack += (levels[i].ceilingHeight || 250) + floorThickness
-  }
-  const bb = wallsBoundingBox(walls)
-  if (!Number.isFinite(bb.minX)) return 0
-  const roof = plan.roof || {}
-  const ceiling = stack + (levels.length
-    ? (levels[levels.length - 1].ceilingHeight || 250)
-    : (plan.ceilingHeight || 250))
-  if (roof.kind === 'plat') return ceiling + 25
-
+  const levels = plan?.levels || []
+  const roof = plan?.roof || {}
+  const floorThickness = plan?.floorThickness ?? 25
   const pitch = ((roof.pitch ?? 35) * Math.PI) / 180
-  const contour = outerContour(walls)
 
-  if (contour.points.length >= 3 && !isRectangular(contour.points)) {
-    return ceiling + roofApexHeight(contour.points, roof)
+  let best = 0
+  let elevation = 0
+  for (let i = 0; i < levels.length; i++) {
+    const walls = levels[i].walls || []
+    const eaveZ = elevation + (levels[i].ceilingHeight || 250)
+    elevation = eaveZ + floorThickness
+
+    if (!walls.length) continue
+    const above = i + 1 < levels.length ? outerContour(levels[i + 1].walls || []) : null
+    const covered = above && above.points.length >= 3 ? [above.points] : []
+    const contour = outerContour(walls)
+    if (uncoveredFootprint(contour.points, covered) <= 0) continue
+
+    const apex = roof.kind === 'plat' ? 25 : roofApexHeight(contour.points, roof)
+    best = Math.max(best, eaveZ + apex)
   }
-
-  const span = Math.min(bb.width, bb.height) + 2 * (roof.overhang || 0)
-  const extra = roof.kind === 'monopente'
-    ? span * Math.tan(pitch)
-    : (span / 2) * Math.tan(pitch)
-  return ceiling + extra
+  return best
 }

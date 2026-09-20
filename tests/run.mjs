@@ -16,7 +16,7 @@ import {
 } from '../src/lib/metre.js'
 import { computePlumbing } from '../src/lib/plumbing.js'
 import { computeElectrical, minimumEquipment } from '../src/lib/electrical.js'
-import { buildScene, roofFaces, decomposeRectangles, roofApexHeight } from '../src/lib/render3d.js'
+import { buildScene, roofFaces, decomposeRectangles, roofApexHeight, uncoveredFootprint } from '../src/lib/render3d.js'
 import { stairGeometry, checkStair } from '../src/lib/stairs.js'
 
 let failures = 0
@@ -57,6 +57,17 @@ section('Géométrie du plan')
   // une extrémité laissée en l'air se raccroche
   const dangling = [...walls, makeWall({ x: 500, y: 40 }, { x: 500, y: 760 }, { thickness: 7, kind: 'cloison' })]
   check('extrémités rattrapées', detectRooms(healDanglingEnds(dangling)).length, 2)
+
+  // Les cloisons posées sur une coordonnée à cheval sur la demi-maille du
+  // graphe (x/4 finissant par 0,5) ont longtemps été ignorées : l'arrondi
+  // envoyait le point coupé et le point posé sur deux nœuds différents.
+  const grid = [
+    ...rectanglePlan(1900, 800, 20),
+    makeWall({ x: 950, y: 10 }, { x: 950, y: 790 }, { thickness: 7, kind: 'cloison' }),
+    makeWall({ x: 10, y: 430 }, { x: 950, y: 430 }, { thickness: 7, kind: 'cloison' }),
+  ]
+  check('cloisons à cheval sur la maille : 3 pièces', detectRooms(grid).length, 3)
+  check('aire totale conservée', detectRooms(grid).reduce((t, r) => t + r.grossArea, 0), 147.25, 0.02)
 }
 
 /* ------------------------------------------------------------- toiture */
@@ -80,6 +91,18 @@ section('Toiture')
   check('faîtage plausible', roofApexHeight(L, roof) > 150 && roofApexHeight(L, roof) < 260, true)
   // rectangle : portée 8,00 + 2 × 0,40, faîtage = 4,40 × tan(35°)
   check('faîtage exact sur rectangle', roofApexHeight(R, roof), 440 * Math.tan(35 * Math.PI / 180))
+
+  // Une aile de plain-pied doit garder son toit quand l'étage ne couvre que
+  // l'autre branche du L. Le corps découpé était à cheval sur les deux, et
+  // son centre tombant sous l'étage, l'aile perdait toute couverture.
+  const etage = [{ x: 0, y: 0 }, { x: 830, y: 0 }, { x: 830, y: 560 }, { x: 0, y: 560 }]
+  const basse = roofFaces(wallsOf(L), roof, 250, L, [etage])
+  check('l\'aile de plain-pied garde sa toiture', basse.some(f => f.kind === 'toiture'), true)
+  const couverts = basse.filter(f => f.kind === 'toiture').flatMap(f => f.points)
+  check('aucun pan au-dessus de la partie déjà couverte',
+    couverts.every(p => p[1] >= 560 - 1 || p[0] <= 390 + 41), true)
+  check('emprise restant à couvrir', uncoveredFootprint(L, [etage]), 6.24, 0.02)
+  check('rien à couvrir quand tout est surmonté', uncoveredFootprint(R, [R]), 0)
 }
 
 /* --------------------------------------------------------------- métré */
@@ -224,6 +247,34 @@ section('Étages, escaliers et sauvegarde du modèle')
   const upper = buildScene(plan, { onlyLevel: 1 })
   check('un niveau isolé démarre à son altitude',
     Math.min(...upper.faces.filter(f => f.kind === 'mur').flatMap(f => f.points.map(p => p[2]))), 275)
+
+  // Le plancher de l'étage doit s'ouvrir sur le vide sur séjour et sur la
+  // trémie de l'escalier, sinon la volée bute contre la dalle.
+  const perce = buildScene(plan, {
+    onlyLevel: 1,
+    levelRooms: [{}, { open: [[
+      { x: 600, y: 10 }, { x: 990, y: 10 }, { x: 990, y: 790 }, { x: 600, y: 790 },
+    ]] }],
+  })
+  const dalles = perce.faces.filter(f => f.kind === 'plancher')
+  check('le plancher s\'arrête au vide sur séjour',
+    Math.max(...dalles.flatMap(f => f.points.map(p => p[0]))), 600)
+
+  const avecEscalier = buildScene({
+    ...plan,
+    stairs: [{ id: 's1', levelFrom: 0, point: { x: 200, y: 120 }, rotation: 90, width: 100, kind: 'droit' }],
+  }, { onlyLevel: 1 })
+  const planchers = avecEscalier.faces.filter(f => f.kind === 'plancher')
+  check('la trémie perce le plancher', planchers.length > 6, true)
+  check('aucune dalle au droit de la volée',
+    planchers.every(f => {
+      const xs = f.points.map(p => p[0])
+      const ys = f.points.map(p => p[1])
+      const horizontal = Math.abs(Math.max(...f.points.map(p => p[2])) - Math.min(...f.points.map(p => p[2]))) < 1
+      if (!horizontal) return true
+      return !(Math.min(...xs) < 200 && Math.max(...xs) > 200
+        && Math.min(...ys) < 300 && Math.max(...ys) > 300)
+    }), true)
 
   const geo = stairGeometry(275, 'droit', 90)
   check('hauteur de marche confortable', geo.riser >= 16 && geo.riser <= 19, true)

@@ -335,11 +335,16 @@ export const ROOM_TYPES = [
   { id: 'couloir', label: 'Couloir', icon: '↔️', floor: 'carrelage-sol', wet: false },
   { id: 'bureau', label: 'Bureau', icon: '💻', floor: 'parquet-flottant', wet: false },
   { id: 'buanderie', label: 'Buanderie', icon: '🧺', floor: 'carrelage-sol', wet: true },
-  { id: 'garage', label: 'Garage', icon: '🚗', floor: null, wet: false },
+  { id: 'garage', label: 'Garage', icon: '🚗', floor: null, wet: false, habitable: false },
   { id: 'cellier', label: 'Cellier', icon: '📦', floor: 'carrelage-sol', wet: false },
   { id: 'dressing', label: 'Dressing', icon: '👔', floor: 'parquet-flottant', wet: false },
   { id: 'palier', label: 'Palier', icon: '🪜', floor: 'parquet-flottant', wet: false },
+  { id: 'cave', label: 'Cave', icon: '🍷', floor: null, wet: false, habitable: false },
+  { id: 'technique', label: 'Local technique', icon: '⚙️', floor: null, wet: false, habitable: false },
   { id: 'terrasse', label: 'Terrasse', icon: '🌤️', floor: 'dalle-sur-plots', wet: false, outdoor: true },
+  // Un vide sur séjour appartient à la pièce du dessous : il ne reçoit ni
+  // plancher ni plafond, et sa surface est déjà comptée au niveau inférieur.
+  { id: 'vide', label: 'Vide sur séjour', icon: '🕳️', floor: null, wet: false, open: true },
   { id: 'autre', label: 'Autre', icon: '⬜', floor: 'carrelage-sol', wet: false },
 ]
 

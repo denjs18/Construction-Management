@@ -67,7 +67,11 @@ export default function View3D() {
       networks,
       showNetworks,
       onlyLevel,
-      terraces: building.top.outdoorRooms.map(r => r.points),
+      // Les terrasses percent la toiture, les vides sur séjour le plancher
+      levelRooms: building.levels.map(l => ({
+        outdoor: l.surfaces.outdoorRooms.map(r => r.points),
+        open: l.surfaces.openRooms.map(r => r.points),
+      })),
     }),
     [plan, showRoof, exploded, exteriorWallIds, showStructure, stage, networks, showNetworks, onlyLevel, building],
   )
@@ -226,7 +230,7 @@ export default function View3D() {
                 onlyLevel === i ? 'bg-white text-slate-900' : 'bg-white/10 text-white/70'
               }`}
             >
-              {i === 0 ? 'RDC seul' : `Étage ${i} seul`}
+              {lvl.name} seul
             </button>
           ))}
         </div>
@@ -271,7 +275,7 @@ export default function View3D() {
           <div className="absolute bottom-2 left-2 right-2 bg-white/95 rounded-xl px-3 py-2 shadow-sm">
             <p className="text-[11px] text-gray-700 leading-relaxed">
               <span className="font-semibold">
-                {onlyLevel === 0 ? 'Rez-de-chaussée' : `Étage ${onlyLevel}`} isolé
+                {plan.levels[onlyLevel]?.name || `Niveau ${onlyLevel}`} isolé
               </span>
               {' — '}toiture et autres niveaux retirés pour voir l'aménagement.
             </p>
@@ -343,7 +347,13 @@ export default function View3D() {
         <div className="card space-y-2">
           <h3 className="font-semibold text-gray-900 text-sm">Volumétrie</h3>
           <Row label="Emprise au sol" value={`${building.footprint.toFixed(1).replace('.', ',')} m²`} />
-          <Row label="Niveaux" value={plan.levels.map((l, i) => `${i === 0 ? 'RDC' : `Étage ${i}`} ${l.ceilingHeight} cm`).join(' · ')} />
+          <Row label="Niveaux" value={plan.levels.map(l => `${l.name} ${l.ceilingHeight} cm`).join(' · ')} />
+          {building.serviceArea > 0 && (
+            <Row label="Annexes non habitables" value={`${building.serviceArea.toFixed(1).replace('.', ',')} m²`} />
+          )}
+          {building.openArea > 0 && (
+            <Row label="Vide sur séjour" value={`${building.openArea.toFixed(1).replace('.', ',')} m²`} />
+          )}
           {building.terraceArea > 0 && (
             <Row label="Terrasses" value={`${building.terraceArea.toFixed(1).replace('.', ',')} m²`} />
           )}

@@ -20,7 +20,7 @@ import {
 import { PRICE_BY_ID, STRUCTURE_BY_ID, ROOM_TYPE_BY_ID, priceOf } from '../data/prices'
 import { planElectricalNeeds, computeElectrical } from './electrical'
 import { computePlumbing } from './plumbing'
-import { coverageArea } from './render3d'
+import { coverageArea, buildingCoverageArea, uncoveredFootprint } from './render3d'
 
 /* ---------------------------------------------------------------- le plan */
 
@@ -213,10 +213,19 @@ export function computeSurfaces(plan) {
   const partitionLength = partitions.reduce((s, w) => s + wallLength(w), 0) / 100
   const railingLength = railings.reduce((s, w) => s + wallLength(w), 0) / 100
 
-  // Une terrasse compte dans l'emprise mais jamais dans la surface habitable
-  const indoorRooms = rooms.filter(r => !r.typeInfo?.outdoor)
+  // Trois catégories distinctes, qui ne se comptent pas de la même façon :
+  // une terrasse est dehors, un garage ou une cave sont couverts mais non
+  // habitables, et un vide sur séjour appartient à l'étage du dessous.
   const outdoorRooms = rooms.filter(r => r.typeInfo?.outdoor)
+  const openRooms = rooms.filter(r => r.typeInfo?.open)
+  const coveredRooms = rooms.filter(r => !r.typeInfo?.outdoor && !r.typeInfo?.open)
+  const indoorRooms = coveredRooms.filter(r => r.typeInfo?.habitable !== false)
+
   const floorArea = indoorRooms.reduce((s, r) => s + r.area, 0)
+  const serviceArea = coveredRooms
+    .filter(r => r.typeInfo?.habitable === false)
+    .reduce((s, r) => s + r.area, 0)
+  const openArea = openRooms.reduce((s, r) => s + r.area, 0)
   const terraceArea = outdoorRooms.reduce((s, r) => s + r.area, 0)
   const terracePerimeter = outdoorRooms.reduce((s, r) => s + r.perimeter, 0)
   const footprint = contour.area || floorArea + terraceArea
@@ -266,10 +275,15 @@ export function computeSurfaces(plan) {
     gableArea: round2(gableArea),
     exteriorOpeningArea: round2(exteriorOpeningArea),
     roofArea: round2(roofArea),
+    contourPoints: contour.points,
     ceilingHeight: h,
     volume: round2(floorArea * h),
     indoorRooms,
     outdoorRooms,
+    openRooms,
+    coveredRooms,
+    serviceArea: round2(serviceArea),
+    openArea: round2(openArea),
     terraceArea: round2(terraceArea),
     terracePerimeter: round2(terracePerimeter),
   }
@@ -299,9 +313,13 @@ export function computeBuildingSurfaces(rawPlan) {
     top: top.surfaces,
     levelCount: levels.length,
     floorArea: round2(levels.reduce((s, l) => s + l.surfaces.floorArea, 0)),
+    serviceArea: round2(levels.reduce((s, l) => s + l.surfaces.serviceArea, 0)),
+    openArea: round2(levels.reduce((s, l) => s + l.surfaces.openArea, 0)),
     terraceArea: round2(levels.reduce((s, l) => s + l.surfaces.terraceArea, 0)),
-    footprint: ground.surfaces.footprint,
-    perimeter: ground.surfaces.perimeter,
+    // L'emprise au sol est la projection du bâtiment entier : avec un sous-sol
+    // partiel, le niveau le plus bas n'est pas le plus large.
+    footprint: round2(Math.max(...levels.map(l => l.surfaces.footprint))),
+    perimeter: levels.reduce((best, l) => (l.surfaces.footprint > best.surfaces.footprint ? l : best), levels[0]).surfaces.perimeter,
     volume: round2(levels.reduce((s, l) => s + l.surfaces.volume, 0)),
     rooms: levels.flatMap(l => l.surfaces.rooms.map(r => ({ ...r, levelName: l.level.name }))),
   }
@@ -372,36 +390,62 @@ export function computeQuantities(rawPlan) {
   /* ================= Ouvrages comptés une seule fois ================= */
 
   if (isNew) {
+    // Avec un sous-sol partiel, une partie seulement du rez-de-chaussée repose
+    // sur le vide sanitaire : le reste est une dalle coulée à même le terrain,
+    // et il faut des semelles sous les deux.
+    const groundIndex = Math.min(Math.max(plan.groundLevel || 0, 0), levels.length - 1)
+    const onGrade = levels[groundIndex].surfaces
+    const buriedBelow = groundIndex > 0 ? levels[groundIndex - 1].surfaces.footprint : 0
+    const slabArea = round2(ground.footprint + Math.max(0, onGrade.footprint - buriedBelow))
     const footingLength = ground.perimeter + ground.interiorBearingLength
-    add('terrassement', ground.footprint * 0.4, STAGE.TERRASSEMENT,
-      `Décapage sur l'emprise de ${ground.footprint} m²`)
+      + (groundIndex > 0 ? onGrade.perimeter : 0)
+    add('terrassement', slabArea * 0.4, STAGE.TERRASSEMENT,
+      `Décapage sur l'emprise de ${slabArea} m²`)
     add('fouilles', footingLength * 0.6 * ((fnd.depth || 80) / 100), STAGE.TERRASSEMENT,
       `${round2(footingLength)} ml de rigole, profondeur ${fnd.depth || 80} cm`)
     add('fondation-beton', footingLength * ((fnd.footingWidth || 50) / 100) * ((fnd.footingHeight || 30) / 100), STAGE.FONDATION,
       `Semelle filante ${fnd.footingWidth || 50} × ${fnd.footingHeight || 30} cm sur ${round2(footingLength)} ml`)
     add('soubassement', footingLength * ((fnd.soubassement || 50) / 100), STAGE.FONDATION,
       `Élévation de ${fnd.soubassement || 50} cm entre semelle et dalle`)
-    add('herisson', ground.footprint, STAGE.FONDATION, `${slab.herisson || 20} cm de concassé compacté`)
-    add('isolation-sous-dalle', ground.footprint, STAGE.FONDATION, `Panneaux de ${slab.insulation || 12} cm`)
-    add('dalle-beton', ground.footprint, STAGE.FONDATION, `Dalle de ${slab.thickness || 15} cm`)
+    add('herisson', slabArea, STAGE.FONDATION, `${slab.herisson || 20} cm de concassé compacté`)
+    add('isolation-sous-dalle', slabArea, STAGE.FONDATION, `Panneaux de ${slab.insulation || 12} cm`)
+    add('dalle-beton', slabArea, STAGE.FONDATION, `Dalle de ${slab.thickness || 15} cm`)
 
-    // Un plancher par niveau supplémentaire
+    // Un plancher par niveau supplémentaire. Le niveau de plain-pied ne porte
+    // un plancher que sur l'emprise du sous-sol : ailleurs, c'est la dalle.
     for (let i = 1; i < levels.length; i++) {
       const s = levels[i].surfaces
-      add('plancher-intermediaire', s.footprint, STAGE.FONDATION,
-        `${levels[i].level.name} sur ${s.footprint} m²`)
+      const area = i === groundIndex ? buriedBelow : s.footprint
+      if (area <= 0) continue
+      add('plancher-intermediaire', area, STAGE.FONDATION,
+        `${levels[i].level.name} sur ${round2(area)} m²`)
+    }
+
+    // Chaque niveau porte une toiture sur ce que le niveau supérieur ne
+    // recouvre pas : une aile de plain-pied a son propre toit, plus bas.
+    const coverage = buildingCoverageArea(plan)
+    let roofedFootprint = 0
+    let roofedPerimeter = 0
+    for (let i = 0; i < plan.levels.length; i++) {
+      const s = levels[i].surfaces
+      const above = i + 1 < plan.levels.length ? levels[i + 1].surfaces.contourPoints : null
+      const uncovered = uncoveredFootprint(s.contourPoints, above ? [above] : [])
+      if (uncovered <= 0) continue
+      roofedFootprint += uncovered
+      roofedPerimeter += s.perimeter
     }
 
     const roofKind = plan.roof?.kind
     if (roofKind !== 'plat') {
       const charpente = opts.amenagedAttic ? 'charpente-traditionnelle' : 'charpente-fermettes'
-      add(charpente, top.footprint, STAGE.COUVERTURE, `Sur une emprise de ${top.footprint} m²`)
-      add('couverture-tuiles', top.roofArea, STAGE.COUVERTURE,
-        `${top.roofArea} m² de rampant, pente ${plan.roof?.pitch || 35}°`)
+      add(charpente, roofedFootprint, STAGE.COUVERTURE,
+        `${round2(roofedFootprint)} m² de surface à couvrir, toutes ailes confondues`)
+      add('couverture-tuiles', coverage, STAGE.COUVERTURE,
+        `${coverage} m² de rampant, pente ${plan.roof?.pitch || 35}°`)
     }
-    add('zinguerie', top.perimeter * 0.6, STAGE.COUVERTURE, 'Gouttières sur les rives basses')
-    add('isolation-combles', top.floorArea, STAGE.SECOND,
-      `Isolation en plafond du dernier niveau sur ${top.floorArea} m²`)
+    add('zinguerie', roofedPerimeter * 0.6, STAGE.COUVERTURE, 'Gouttières sur les rives basses')
+    add('isolation-combles', roofedFootprint, STAGE.SECOND,
+      `Isolation sous toiture sur ${round2(roofedFootprint)} m²`)
   }
 
   // Escaliers
@@ -415,7 +459,20 @@ export function computeQuantities(rawPlan) {
   for (const { level, surfaces: s } of levels) {
     const name = level.name
 
-    if (isNew) {
+    const buried = level.kind === 'sous-sol'
+
+    if (isNew && buried) {
+      // Un sous-sol se monte en blocs à bancher et reprend la poussée des
+      // terres : ce n'est pas la même maçonnerie qu'une élévation hors sol.
+      add('soubassement', s.exteriorWallArea + s.interiorBearingArea, STAGE.FONDATION,
+        `${name} : ${s.exteriorLength} ml de murs enterrés`)
+      add('terrassement', s.footprint * ((level.ceilingHeight || 250) / 100) * 1.25, STAGE.TERRASSEMENT,
+        `Décaissement du sous-sol sur ${s.footprint} m²`)
+      add('etancheite-terrasse', s.exteriorWallArea * 0.9, STAGE.FONDATION,
+        `${name} : cuvelage et drainage des murs enterrés`)
+    }
+
+    if (isNew && !buried) {
       add(structure.wallItem, s.exteriorWallArea + s.interiorBearingArea, STAGE.ELEVATION,
         `${name} : ${s.exteriorLength} ml de murs extérieurs`)
       const lintelLength = (level.openings || []).reduce((sum, o) => sum + (o.width / 100) * 1.4, 0)
