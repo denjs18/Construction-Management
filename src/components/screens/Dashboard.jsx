@@ -1,10 +1,11 @@
 import { useMemo } from 'react'
 import { useApp } from '../../contexts/AppContext'
 import { Link, useNavigate } from 'react-router-dom'
-import { CheckCircle2, Circle, Clock, TrendingUp, ChevronRight, Plus, AlertCircle, Ruler, Box, Calculator } from 'lucide-react'
+import { CheckCircle2, Circle, Clock, TrendingUp, ChevronRight, Plus, AlertCircle, Ruler, Box, Calculator, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { BUDGET_LOTS } from '../../data/templates'
 import { computeBuildingSurfaces, computeEstimate } from '../../lib/metre'
 import { formatEuroShort } from '../../data/prices'
+import { daysSinceBackup } from './Backup'
 
 /**
  * Raccourci vers le plan. Tant que rien n'est dessiné, la carte invite à
@@ -80,6 +81,54 @@ function PlanCard() {
         </button>
       </div>
     </div>
+  )
+}
+
+/**
+ * Rappel de sauvegarde.
+ *
+ * Les données ne vivent que dans ce navigateur : sans export, un nettoyage ou
+ * une purge de Safari fait disparaître des mois de travail. Le rappel se fait
+ * insistant au-delà de deux semaines, discret le reste du temps.
+ */
+function BackupBanner() {
+  const navigate = useNavigate()
+  const since = useMemo(() => daysSinceBackup(), [])
+  const urgent = since === null || since > 14
+
+  if (!urgent) {
+    return (
+      <button
+        onClick={() => navigate('/sauvegarde')}
+        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-green-50 border border-green-100 active:bg-green-100"
+      >
+        <ShieldCheck size={15} className="text-green-600 flex-shrink-0" />
+        <span className="text-xs text-green-800 flex-1 text-left">
+          Sauvegardé il y a {since === 0 ? "moins d'un jour" : `${since} jour${since > 1 ? 's' : ''}`}
+        </span>
+        <ChevronRight size={15} className="text-green-400" />
+      </button>
+    )
+  }
+
+  return (
+    <button
+      onClick={() => navigate('/sauvegarde')}
+      className="w-full card flex items-center gap-3 text-left border-2 border-amber-200 active:bg-amber-50"
+    >
+      <div className="w-10 h-10 rounded-2xl bg-amber-100 flex items-center justify-center flex-shrink-0">
+        <ShieldAlert size={19} className="text-amber-600" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="font-semibold text-gray-900 text-sm">
+          {since === null ? 'Projet jamais sauvegardé' : `Sauvegarde vieille de ${since} jours`}
+        </p>
+        <p className="text-xs text-gray-500 leading-relaxed">
+          Vos données n'existent que dans ce navigateur. Exportez-les pour ne rien perdre.
+        </p>
+      </div>
+      <ChevronRight size={18} className="text-gray-300 flex-shrink-0" />
+    </button>
   )
 }
 
@@ -177,6 +226,9 @@ export default function Dashboard() {
       </div>
 
       <div className="px-4 -mt-4 space-y-4">
+        {/* Sauvegarde */}
+        <BackupBanner />
+
         {/* Plan et maquette */}
         <PlanCard />
 

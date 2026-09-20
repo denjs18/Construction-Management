@@ -285,6 +285,23 @@ export function AppProvider({ children }) {
     localStorage.setItem('monchantier-state', JSON.stringify(state))
   }, [state])
 
+  /**
+   * Demande au navigateur de considérer ce stockage comme durable.
+   *
+   * Sans cela, il fait partie de ce qu'un navigateur peut effacer pour
+   * récupérer de la place, et Safari va plus loin : il supprime le stockage
+   * d'un site qu'on n'a pas ouvert depuis sept jours. Sur un chantier qui
+   * s'étale sur des mois, c'est un projet entier qui disparaît.
+   *
+   * Une application installée sur l'écran d'accueil échappe à cette règle.
+   */
+  useEffect(() => {
+    if (!navigator.storage?.persist) return
+    navigator.storage.persisted()
+      .then(already => (already ? true : navigator.storage.persist()))
+      .catch(() => {})
+  }, [])
+
   const activeProject = state.projects.find(p => p.id === state.activeProjectId) || null
   const activePlan = activeProject ? normalisePlan(activeProject.plan) : null
 

@@ -13,6 +13,7 @@ import Estimate from './components/screens/Estimate'
 import View3D from './components/screens/View3D'
 import Plumbing from './components/screens/Plumbing'
 import Electrical from './components/screens/Electrical'
+import Backup from './components/screens/Backup'
 
 function AppShell() {
   const { state } = useApp()
@@ -37,6 +38,7 @@ function AppShell() {
           <Route path="/chiffrage" element={<Estimate />} />
           <Route path="/budget" element={<Budget />} />
           <Route path="/journal" element={<Journal />} />
+          <Route path="/sauvegarde" element={<Backup />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
