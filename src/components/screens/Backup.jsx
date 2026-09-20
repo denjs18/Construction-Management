@@ -1,8 +1,13 @@
 import { useState, useRef, useMemo } from 'react'
 import {
   Download, Upload, ShieldCheck, ShieldAlert, AlertTriangle, Info,
-  HardDrive, Smartphone, CheckCircle2,
+  HardDrive, Smartphone, CheckCircle2, RefreshCw, Copy, CloudUpload,
+  CloudDownload, KeyRound, Loader2,
 } from 'lucide-react'
+import {
+  generateCode, formatCode, CODE_PATTERN, storedCode, storeCode, forgetCode,
+  lastSyncAt, pull, push, markPulled,
+} from '../../lib/sync'
 import Header from '../layout/Header'
 import { useApp } from '../../contexts/AppContext'
 
@@ -195,6 +200,9 @@ export default function Backup() {
           </div>
         )}
 
+        {/* Synchronisation par code */}
+        <SyncCard />
+
         {/* Où vivent les données */}
         <div className="card space-y-3">
           <h3 className="font-semibold text-gray-900 flex items-center gap-2 text-sm">
@@ -250,6 +258,237 @@ function Row({ label, value }) {
     <div className="flex justify-between text-sm">
       <span className="text-gray-500">{label}</span>
       <span className="font-semibold text-gray-800">{value}</span>
+    </div>
+  )
+}
+
+
+/* ------------------------------------------------- synchronisation */
+
+/**
+ * Synchronisation par code, sans compte.
+ *
+ * Le code tient lieu de clé : il ouvre la lecture comme l'écriture, ce qui est
+ * dit sans détour à l'utilisateur. L'envoi vérifie d'abord qu'aucun autre
+ * appareil n'a déposé une version plus récente : écraser en silence le travail
+ * fait ailleurs serait pire que ne pas synchroniser du tout.
+ */
+function SyncCard() {
+  const { state, dispatch } = useApp()
+  const [code, setCode] = useState(() => storedCode())
+  const [entry, setEntry] = useState('')
+  const [busy, setBusy] = useState(null)
+  const [note, setNote] = useState(null)
+  const [conflict, setConflict] = useState(null)
+  const [copied, setCopied] = useState(false)
+
+  const syncedAt = lastSyncAt()
+
+  const report = (kind, text) => setNote({ kind, text })
+
+  const doPush = async (targetCode, { force = false } = {}) => {
+    setBusy('push'); setNote(null); setConflict(null)
+    try {
+      await push(targetCode, state, { force })
+      storeCode(targetCode)
+      setCode(targetCode)
+      report('ok', 'Projet envoyé. Saisissez ce code sur un autre appareil pour le récupérer.')
+    } catch (error) {
+      if (error.code === 'conflict') {
+        setConflict({ code: targetCode, at: error.remoteUpdatedAt })
+      } else if (error.code === 'storage-not-configured') {
+        report('error', "La synchronisation n'est pas encore activée sur ce déploiement. La sauvegarde par fichier, elle, fonctionne.")
+      } else {
+        report('error', error.message)
+      }
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const doPull = async (targetCode) => {
+    setBusy('pull'); setNote(null); setConflict(null)
+    try {
+      const remote = await pull(targetCode)
+      if (!remote) {
+        report('error', "Aucun projet enregistré sous ce code. Vérifiez la saisie.")
+        return
+      }
+      const incoming = remote.state
+      const merged = [...state.projects]
+      let added = 0
+      let replaced = 0
+      for (const project of incoming.projects || []) {
+        const at = merged.findIndex(p => p.id === project.id)
+        if (at >= 0) { merged[at] = project; replaced += 1 }
+        else { merged.push(project); added += 1 }
+      }
+      dispatch({
+        type: 'LOAD_STATE',
+        payload: { projects: merged, activeProjectId: incoming.activeProjectId || merged[0]?.id || null },
+      })
+      storeCode(targetCode)
+      setCode(targetCode)
+      markPulled(remote.updatedAt)
+      report('ok', `${added} projet${added > 1 ? 's' : ''} ajouté${added > 1 ? 's' : ''}, ${replaced} mis à jour depuis le code.`)
+    } catch (error) {
+      report('error', error.code === 'storage-not-configured'
+        ? "La synchronisation n'est pas encore activée sur ce déploiement."
+        : error.message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch { /* le presse-papiers peut être refusé */ }
+  }
+
+  return (
+    <div className="card space-y-3">
+      <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+        <RefreshCw size={17} className="text-blue-600" />
+        Synchroniser entre appareils
+      </h3>
+
+      {!code && (
+        <>
+          <p className="text-sm text-gray-600 leading-relaxed">
+            Obtenez un code, et retrouvez votre projet sur n'importe quel autre téléphone ou
+            ordinateur en le saisissant. Aucun compte, aucun mot de passe.
+          </p>
+          <button
+            onClick={() => doPush(generateCode())}
+            disabled={busy}
+            className="w-full btn-primary flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            {busy === 'push' ? <Loader2 size={17} className="animate-spin" /> : <KeyRound size={17} />}
+            Créer un code de synchronisation
+          </button>
+        </>
+      )}
+
+      {code && (
+        <>
+          <div className="bg-blue-50 rounded-2xl p-4 text-center">
+            <p className="text-[11px] text-blue-600 uppercase tracking-wide font-semibold">Votre code</p>
+            <p className="text-2xl font-bold text-blue-900 tracking-wider tabular-nums mt-1">{code}</p>
+            <button
+              onClick={copyCode}
+              className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700"
+            >
+              <Copy size={12} />
+              {copied ? 'Copié' : 'Copier'}
+            </button>
+          </div>
+
+          <p className="text-xs text-gray-500 leading-relaxed">
+            {syncedAt
+              ? `Dernier échange le ${syncedAt.toLocaleDateString('fr-FR')} à ${syncedAt.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.`
+              : "Pas encore d'échange depuis cet appareil."}
+          </p>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => doPush(code)}
+              disabled={busy}
+              className="flex items-center justify-center gap-1.5 bg-blue-600 text-white text-sm font-semibold py-2.5 rounded-xl disabled:opacity-50"
+            >
+              {busy === 'push' ? <Loader2 size={15} className="animate-spin" /> : <CloudUpload size={15} />}
+              Envoyer
+            </button>
+            <button
+              onClick={() => doPull(code)}
+              disabled={busy}
+              className="flex items-center justify-center gap-1.5 bg-gray-100 text-gray-700 text-sm font-semibold py-2.5 rounded-xl disabled:opacity-50"
+            >
+              {busy === 'pull' ? <Loader2 size={15} className="animate-spin" /> : <CloudDownload size={15} />}
+              Récupérer
+            </button>
+          </div>
+
+          <button
+            onClick={() => { forgetCode(); setCode(null); setNote(null) }}
+            className="w-full text-xs text-gray-500 py-1"
+          >
+            Oublier ce code sur cet appareil
+          </button>
+        </>
+      )}
+
+      {/* Reprendre un projet depuis un autre appareil */}
+      <div className="pt-2 border-t border-gray-100 space-y-2">
+        <label className="block text-xs font-semibold text-gray-700">
+          Reprendre un projet depuis un code
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            inputMode="text"
+            autoCapitalize="characters"
+            placeholder="XXXX-XXXX-XXXX"
+            value={entry}
+            onChange={e => setEntry(formatCode(e.target.value))}
+            className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-center tracking-wider tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button
+            onClick={() => doPull(entry)}
+            disabled={busy || !CODE_PATTERN.test(entry)}
+            className="px-4 rounded-xl bg-slate-800 text-white text-sm font-semibold disabled:opacity-35"
+          >
+            Ouvrir
+          </button>
+        </div>
+      </div>
+
+      {conflict && (
+        <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 space-y-2">
+          <p className="text-xs text-amber-800 leading-relaxed">
+            Une version plus récente a été déposée sous ce code le{' '}
+            {new Date(conflict.at).toLocaleDateString('fr-FR')} depuis un autre appareil.
+            Récupérez-la d'abord, ou écrasez-la si vous êtes certain que celle-ci est la bonne.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => doPull(conflict.code)}
+              className="flex-1 py-2 rounded-xl bg-blue-600 text-white text-xs font-semibold"
+            >
+              Récupérer d'abord
+            </button>
+            <button
+              onClick={() => doPush(conflict.code, { force: true })}
+              className="flex-1 py-2 rounded-xl bg-amber-100 text-amber-800 text-xs font-semibold"
+            >
+              Écraser quand même
+            </button>
+          </div>
+        </div>
+      )}
+
+      {note && (
+        <div className={`rounded-xl p-3 flex gap-2 ${note.kind === 'ok' ? 'bg-green-50' : 'bg-red-50'}`}>
+          {note.kind === 'ok'
+            ? <CheckCircle2 size={14} className="text-green-600 flex-shrink-0 mt-0.5" />
+            : <AlertTriangle size={14} className="text-red-500 flex-shrink-0 mt-0.5" />}
+          <p className={`text-xs leading-relaxed ${note.kind === 'ok' ? 'text-green-800' : 'text-red-700'}`}>
+            {note.text}
+          </p>
+        </div>
+      )}
+
+      <div className="bg-slate-50 rounded-xl p-3 flex gap-2">
+        <Info size={14} className="text-gray-500 flex-shrink-0 mt-0.5" />
+        <p className="text-[11px] text-gray-600 leading-relaxed">
+          Le code seul donne accès au projet, en lecture comme en modification : ne le publiez pas.
+          Vos données sont alors déposées sur un serveur, et non plus seulement sur votre téléphone —
+          y compris l'adresse du chantier si vous l'avez renseignée. La sauvegarde par fichier reste
+          la protection qui ne dépend de personne.
+        </p>
+      </div>
     </div>
   )
 }
