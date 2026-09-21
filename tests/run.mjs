@@ -16,7 +16,7 @@ import {
 } from '../src/lib/metre.js'
 import { computePlumbing } from '../src/lib/plumbing.js'
 import { computeElectrical, minimumEquipment } from '../src/lib/electrical.js'
-import { buildScene, roofFaces, decomposeRectangles, roofApexHeight, uncoveredFootprint } from '../src/lib/render3d.js'
+import { buildScene, roofFaces, decomposeRectangles, roofApexHeight, uncoveredFootprint, ridgeHeight } from '../src/lib/render3d.js'
 import { stairGeometry, checkStair } from '../src/lib/stairs.js'
 
 let failures = 0
@@ -275,6 +275,22 @@ section('Étages, escaliers et sauvegarde du modèle')
       return !(Math.min(...xs) < 200 && Math.max(...xs) > 200
         && Math.min(...ys) < 300 && Math.max(...ys) > 300)
     }), true)
+
+  // Le faîtage se mesure depuis le terrain naturel : un sous-sol ne doit pas
+  // gonfler la hauteur lue par le PLU.
+  const avecSousSol = normalisePlan({
+    ...createEmptyPlan(),
+    groundLevel: 1,
+    roof: { kind: '2pans', pitch: 35, overhang: 0 },
+    levels: [
+      { ...createEmptyLevel(0), kind: 'sous-sol', walls: rectanglePlan(1000, 800, 20), ceilingHeight: 240 },
+      { ...createEmptyLevel(1), walls: rectanglePlan(1000, 800, 20), ceilingHeight: 250 },
+    ],
+  })
+  check('le sous-sol ne compte pas dans le faîtage',
+    ridgeHeight(avecSousSol), 250 + 400 * Math.tan(35 * Math.PI / 180), 0.02)
+  check('sans sous-sol, le faîtage part de la dalle',
+    ridgeHeight({ ...avecSousSol, groundLevel: 0 }) - ridgeHeight(avecSousSol), 265, 0.02)
 
   const geo = stairGeometry(275, 'droit', 90)
   check('hauteur de marche confortable', geo.riser >= 16 && geo.riser <= 19, true)

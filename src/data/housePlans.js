@@ -238,6 +238,8 @@ export const HOUSE_MODELS = [
     label: 'Maison provençale en L',
     icon: '🏡',
     description: "235 m² habitables sur trois niveaux : salon cathédrale, mezzanine, suite de plain-pied et sous-sol.",
+    // Le plan s'ouvre sur le rez-de-chaussée, pas sur le sous-sol
+    openLevel: 1,
     build: () => structuredClone(plan),
   },
 ]

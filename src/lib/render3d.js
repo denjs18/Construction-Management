@@ -1798,7 +1798,12 @@ export function shade(hex, amount) {
   return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`
 }
 
-/** Hauteur au faîtage, utile pour vérifier les règles d'urbanisme */
+/**
+ * Hauteur au faîtage, mesurée depuis le terrain naturel.
+ *
+ * C'est la cote que lit un PLU : les niveaux enterrés ne comptent pas, sans
+ * quoi un sous-sol suffirait à faire dépasser la maison du gabarit autorisé.
+ */
 export function ridgeHeight(plan) {
   const levels = plan?.levels || []
   const roof = plan?.roof || {}
@@ -1821,5 +1826,11 @@ export function ridgeHeight(plan) {
     const apex = roof.kind === 'plat' ? 25 : roofApexHeight(contour.points, roof)
     best = Math.max(best, eaveZ + apex)
   }
-  return best
+
+  const groundIndex = Math.min(Math.max(plan?.groundLevel || 0, 0), Math.max(levels.length - 1, 0))
+  let ground = 0
+  for (let i = 0; i < groundIndex; i++) {
+    ground += (levels[i].ceilingHeight || 250) + floorThickness
+  }
+  return Math.max(0, best - ground)
 }

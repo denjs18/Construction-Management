@@ -50,6 +50,7 @@ export default function PlanEditor() {
   const [guides, setGuides] = useState([])
   const [historyDepth, setHistoryDepth] = useState(0)
   const [activeLevel, setActiveLevel] = useState(0)
+  const [pendingModel, setPendingModel] = useState(null)
   const dragRef = useRef(null)
   const historyRef = useRef([])
   const sheetTouchedRef = useRef(false)
@@ -410,9 +411,17 @@ export default function PlanEditor() {
     pushHistory()
     updatePlan(model.build())
     setSheet(null)
+    setPendingModel(null)
     setMode('view')
-    setActiveLevel(1)
+    setActiveLevel(model.openLevel ?? 0)
     setTimeout(() => canvasRef.current?.fit(), 60)
+  }
+
+  // Charger un modèle efface le plan en cours : on ne le fait sans demander
+  // que sur une feuille encore vierge.
+  const requestModel = (model) => {
+    if (isEmpty && plan.levels.length === 1) loadModel(model)
+    else setPendingModel(model)
   }
 
   const setRoomMeta = (room, patch) => {
@@ -603,7 +612,7 @@ export default function PlanEditor() {
             {HOUSE_MODELS.map(model => (
               <button
                 key={model.id}
-                onClick={() => loadModel(model)}
+                onClick={() => requestModel(model)}
                 className="w-full flex items-center gap-3 p-3 bg-amber-50 border border-amber-100 rounded-xl text-left active:bg-amber-100"
               >
                 <span className="text-2xl">{model.icon}</span>
@@ -655,6 +664,27 @@ export default function PlanEditor() {
               <Zap size={18} className="text-amber-500" />
               Électricité
             </button>
+          </div>
+
+          <div className="card space-y-2">
+            <h3 className="font-semibold text-gray-900 text-sm">Partir d'un modèle</h3>
+            <p className="text-xs text-gray-500">
+              Une maison complète, cloisons et ouvertures comprises, à déformer ensuite. Cela
+              remplace le plan en cours.
+            </p>
+            {HOUSE_MODELS.map(model => (
+              <button
+                key={model.id}
+                onClick={() => requestModel(model)}
+                className="w-full flex items-center gap-3 p-3 bg-amber-50 border border-amber-100 rounded-xl text-left active:bg-amber-100"
+              >
+                <span className="text-2xl">{model.icon}</span>
+                <div className="flex-1">
+                  <p className="font-semibold text-sm text-gray-900">{model.label}</p>
+                  <p className="text-xs text-gray-500">{model.description}</p>
+                </div>
+              </button>
+            ))}
           </div>
 
           <button
@@ -761,6 +791,32 @@ export default function PlanEditor() {
             setSelectedOpeningId(null)
           }}
         />
+      )}
+
+      {pendingModel && (
+        <Sheet title={pendingModel.label} onClose={() => setPendingModel(null)}>
+          <p className="text-sm text-gray-600 leading-relaxed">{pendingModel.description}</p>
+          <div className="bg-amber-50 border border-amber-100 rounded-xl p-3">
+            <p className="text-sm text-amber-800">
+              Charger ce modèle remplace votre plan actuel
+              {walls.length > 0 && ` (${walls.length} mur${walls.length > 1 ? 's' : ''} tracé${walls.length > 1 ? 's' : ''})`}
+              {plan.levels.length > 1 && ` et ses ${plan.levels.length} niveaux`}.
+            </p>
+            <p className="text-xs text-amber-600 mt-1">
+              Le reste du projet — tâches, budget, journal — n'est pas touché, et le bouton Annuler
+              revient en arrière.
+            </p>
+          </div>
+          <button onClick={() => loadModel(pendingModel)} className="w-full btn-primary">
+            Remplacer mon plan
+          </button>
+          <button
+            onClick={() => setPendingModel(null)}
+            className="w-full py-3 rounded-xl font-semibold text-gray-600 active:bg-gray-50"
+          >
+            Garder mon plan
+          </button>
+        </Sheet>
       )}
 
       {sheet === 'rect' && <RectangleSheet onClose={() => setSheet(null)} onCreate={createRectangle} />}
